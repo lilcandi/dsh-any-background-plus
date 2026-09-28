@@ -18,13 +18,17 @@
 
 import { createHash, createHmac } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const URL_FLAG = process.argv.indexOf('--url')
 const BASE = URL_FLAG === -1 ? 'http://127.0.0.1:3080' : process.argv[URL_FLAG + 1]
 const HOST = new URL(BASE).host
-const DSH_HOME = process.env.DSH_HOME ?? 'C:/Users/candi/.dsh'
+// Resolve the DSH home without baking any one machine's username into a public
+// repository: honour DSH_HOME, else the OS home plus the conventional `.dsh`.
+const DSH_HOME =
+  process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const DATA_DIR = join(DSH_HOME, '.dsh-any-background-data')
 const SLOT = join(DATA_DIR, 'wallpaper.jpg')
 // Dual mode's second pane lives in its own slot file, beside the first.
