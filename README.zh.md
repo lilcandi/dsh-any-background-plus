@@ -149,13 +149,9 @@
 
 ## 安装
 
-### 方式一：npm 安装（推荐）
+### 方式一：从 GitHub 安装（推荐）
 
 ```sh
-# 已发布到 npm registry
-dsh plugin --profile web add dsh-any-background
-
-# 或直接安装 GitHub 仓库
 dsh plugin --profile web add github:lilcandi/dsh-any-background-plus
 ```
 
@@ -170,7 +166,7 @@ dsh web
 ### 方式二：npx（无需全局安装）
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-any-background
+npx @deepseek-ai/dsh plugin --profile web add github:lilcandi/dsh-any-background-plus
 npx @deepseek-ai/dsh web
 ```
 
@@ -180,10 +176,10 @@ npx @deepseek-ai/dsh web
 
 ```sh
 git clone https://github.com/lilcandi/dsh-any-background-plus.git
-cd dsh-any-background
+cd dsh-any-background-plus
 pnpm install
 pnpm run bundle
-pnpm dsh plugin --profile web add "dsh-any-background"
+pnpm dsh plugin --profile web add .
 pnpm dsh web
 ```
 

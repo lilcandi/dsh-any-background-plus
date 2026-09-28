@@ -150,13 +150,9 @@ A **DeepSeek Harness** appearance plugin: custom theme color, background wallpap
 
 ## Installation
 
-### Method 1: npm install (Recommended)
+### Method 1: install from GitHub (Recommended)
 
 ```sh
-# published on the npm registry
-dsh plugin --profile web add dsh-any-background
-
-# or straight from the GitHub repository
 dsh plugin --profile web add github:lilcandi/dsh-any-background-plus
 ```
 
@@ -171,7 +167,7 @@ The plugin appears as a **"Theme"** section in Settings.
 ### Method 2: npx (No Global Install)
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-any-background
+npx @deepseek-ai/dsh plugin --profile web add github:lilcandi/dsh-any-background-plus
 npx @deepseek-ai/dsh web
 ```
 
@@ -181,10 +177,10 @@ The `lib/` directory is committed, so installs need no build step. To rebuild af
 
 ```sh
 git clone https://github.com/lilcandi/dsh-any-background-plus.git
-cd dsh-any-background
+cd dsh-any-background-plus
 pnpm install
 pnpm run bundle
-pnpm dsh plugin --profile web add "dsh-any-background"
+pnpm dsh plugin --profile web add .
 pnpm dsh web
 ```
 
