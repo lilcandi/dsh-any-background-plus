@@ -8,12 +8,11 @@
 import { defineStore } from './runtime'
 import type { Ctx, RpcResultLike, BoundActions, ThemeSectionProps, PartOpacities, PartBlurs, PartStrokes, BackgroundType, GeneratedBgParams, ProfileAppearance, ProfileEntry, RotationItem, ScheduleConfig, SchemeOverride, UploadOutcome, StoreInstance } from './types'
 import { NS, zh, en } from './i18n'
-import { cfg, rHasColor, rColor, rWp, rWpImage, rWpVideo, rBgState, rVideoBgState, setWpUrl, setWpImageUrl, setWpVideoUrl, setWpVideoSnapshot, setBgState, adoptConfig, DEFAULT_CONFIG, setBgDark, rBgDark, rProfiles, rRotation, rSchedule, rScheme, rColorScheme, rSchemeOverride, currentAppearance, applyAppearance } from './state'
-import { RPC_CHANNEL, VIDEO_SERVE_URL, FONT_SERVE_URL, fontServeUrl, initRpc, saveConfig, flushSave, loadPersisted, persistWallpaper, persistVideo, persistConfig, uploadVideo, uploadFont, removeFont as rpcRemoveFont, rotationAdd, rotationRemove, rotationActivate, setVideoFromUrl as rpcSetVideoFromUrl } from './rpc'
-import { applyWp, teardownWp, applySettingsOverrides, applyPanelOverrides, applyStrokes, applyFontFace, watchParts, watchThemeResets, regenerateGeneratedBg, setBackgroundType, updateGeneratedBg, applyThemeColor, onGeneratedSnapshot, watchWallpaperDragQuality, clearThemeTokens, onVerdictApplied, onColorAdopted, LABEL_TOKENS } from './wallpaper'
+import { cfg, rHasColor, rColor, rWp, rWpImage, rWpImageRight, rBgState, setWpUrl, setWpImageUrl, setWpImageRightUrl, setBgState, adoptConfig, DEFAULT_CONFIG, setBgDark, rBgDark, rProfiles, rRotation, rSchedule, rScheme, rColorScheme, rSchemeOverride, rotGapMs, currentAppearance, applyAppearance } from './state'
+import { RPC_CHANNEL, WALLPAPER_SERVE_URL, WALLPAPER_RIGHT_SERVE_URL, FONT_SERVE_URL, fontServeUrl, folderPickerAvailable, initRpc, saveConfig, flushSave, loadPersisted, persistWallpaper, persistConfig, uploadFont, removeFont as rpcRemoveFont, rotationAdd, rotationRemove, rotationActivate, pickRotationFolder as rpcPickRotationFolder, clearRotationFolder as rpcClearRotationFolder, advanceRotation } from './rpc'
+import { applyWp, teardownWp, applySettingsOverrides, applyPanelOverrides, applyStrokes, applyFontFace, watchParts, watchThemeResets, regenerateGeneratedBg, setBackgroundType, updateGeneratedBg, applyThemeColor, onGeneratedSnapshot, watchWallpaperDragQuality, clearThemeTokens, onVerdictApplied, onColorAdopted, setWpEdgeFade, LABEL_TOKENS } from './wallpaper'
 import { mountStaticStyles } from './host-compat/styles'
 import { genTokens, hslToHsv, hsvToHsl, extractWallpaperColor } from './utils/color'
-import { captureVideoSnapshot } from './utils/video'
 import { readImgAsync, makeThumb, blobToDataUrl } from './utils/image'
 import { ThemeSection } from './components/ThemeSection'
 import { registerThemeSidebarTab } from './sidebar/tab'
@@ -153,6 +152,7 @@ export function apply(ctx: Ctx): void {
   const storeSpec = defineStore === null ? null : defineStore({
     init: () => ({
       url: null as string | null,
+      urlRight: null as string | null,
       rev: -1,
       colorRev: -1,
       color: null as [number, number, number] | null,
@@ -168,8 +168,8 @@ export function apply(ctx: Ctx): void {
       metaRev: -1,
     }),
     actions: {
-      syncBg: (d: any, url: string | null, r: number, bgType?: BackgroundType, genBg?: GeneratedBgParams | null, bgr?: number, reload?: boolean) => {
-        if (r > d.rev) { d.url = url; d.rev = r }
+      syncBg: (d: any, url: string | null, r: number, bgType?: BackgroundType, genBg?: GeneratedBgParams | null, bgr?: number, reload?: boolean, urlRight?: string | null) => {
+        if (r > d.rev) { d.url = url; d.urlRight = urlRight ?? null; d.rev = r }
         if (bgr !== undefined && bgr > d.bgRev) { d.backgroundType = bgType!; d.generatedBg = genBg ?? null; d.bgRev = bgr }
         if (reload !== undefined) { d.regenerateOnReload = reload }
       },
@@ -210,27 +210,12 @@ export function apply(ctx: Ctx): void {
   if (storeInstance !== null) bound = storeInstance.actions as BoundActions
   const syncBg = () => {
     rev++; bgRev++
-    bound?.syncBg(rWp(), rev, cfg.backgroundType, cfg.generatedBg, bgRev, cfg.regenerateOnReload)
+    bound?.syncBg(rWp(), rev, cfg.backgroundType, cfg.generatedBg, bgRev, cfg.regenerateOnReload, rWpImageRight())
   }
   // When a generated background finishes its first frame, its snapshot becomes
   // the display/preview URL — re-sync the store so the preview follows.
   const disposeSnapshot = onGeneratedSnapshot(syncBg)
   ctx.effect(() => () => disposeSnapshot(), 'dsh-any-background: snapshot listener')
-
-  /** Capture the first frame of the video now applied and finish its
-   *  adaptation: the frame stands in for every still-image API (previews,
-   *  color extraction) and the brightness verdict follows it. The stale guard
-   *  skips a capture whose video was swapped out from under it (another
-   *  upload or a rotation switch landing mid-decode). */
-  const captureAndApplyVideo = (url: string | null): void => {
-    if (url === null) return
-    void captureVideoSnapshot(url).then(snap => {
-      if (rWpVideo() !== url) return
-      setWpVideoSnapshot(snap)
-      applyThemeColor()
-      syncBg()
-    })
-  }
 
   // ── Profiles / presets / scheme / rotation / schedule ────────────────────────
   let metaRev = 0
@@ -296,11 +281,16 @@ export function apply(ctx: Ctx): void {
       console.warn('dsh-any-background: rotation activate failed', r.error)
       return false
     }
-    // The server already persisted the bytes into the wallpaper slot; mirror
-    // setWpFromServer's state switch (bound is not initialized yet here).
+    // The server already persisted the bytes into the wallpaper slot (both
+    // panes in dual mode); mirror setWpFromServer's state switch (bound is not
+    // initialized yet here).
     cfg.backgroundType = 'image'
     setBgDark(null)
     setWpImageUrl(r.wallpaperUrl)
+    // Dual mode paints a second picture on the right; the host returns its URL
+    // only when it really wrote that slot, so a stale right lane cannot survive
+    // a pair whose second draw was skipped (single-candidate pool).
+    setWpImageRightUrl(r.wallpaperRightUrl ?? null)
     setWpUrl(rWpImage())
     setBgState({ ...DEFAULT_CONFIG.bgState })
     cfg.rotation = { ...rot, current: idx, lastRotate: auto || rot.lastRotate === null ? new Date().toISOString() : rot.lastRotate }
@@ -316,6 +306,47 @@ export function apply(ctx: Ctx): void {
     return true
   }
 
+  const advanceFolderMode = async (): Promise<boolean> => {
+    const rot = rRotation()
+    if (!rot.enabled) return false
+    const r = await advanceRotation()
+    if (!r.ok) return false
+    // Adopt the rotation the server actually persisted. Keeping the local one
+    // and letting saveConfig() run would write it straight back over the
+    // advance — in order mode that pins the rotation on the same file forever.
+    cfg.rotation = r.rotation ?? { ...rot, lastRotate: new Date().toISOString() }
+    // The server reloaded the wallpaper slot in place, so the URL is unchanged:
+    // bump the cache-busting rev and re-read the palette from the new picture.
+    setWpImageUrl(WALLPAPER_SERVE_URL)
+    // Both lanes were rewritten by the same advance; re-point the right lane at
+    // the same serve URL with a fresh rev, or it keeps the previous pair's
+    // pixels while the left lane moves on. Whether there IS a right lane is
+    // answered by the server, not guessed from `dual`: a two-folder rotation
+    // keeps its right lane even with `dual` off, and a lone picture has none
+    // even with `dual` on.
+    setWpImageRightUrl(r.wallpaperRightUrl ?? null)
+    cfg.backgroundType = 'image'
+    setBgDark(null)
+    setWpUrl(rWpImage())
+    setBgState({ ...DEFAULT_CONFIG.bgState })
+    if (cfg.backgroundType === 'image') await adoptWallpaperColor(rWp()!)
+    applyThemeColor()
+    syncBg()
+    saveConfig()
+    syncMetaNow()
+    return true
+  }
+
+  // Advance the rotation once, right now, mirroring the section's own "switch
+  // now" button: folder mode delegates entirely to the node half (it owns both
+  // the listing and the choice), the pool picks the next index locally.
+  const rotateOnceNow = async (): Promise<boolean> => {
+    const rot = rRotation()
+    if (rot.source === 'folder' || rot.source === 'folders') return advanceFolderMode()
+    if (rot.items.length === 0) return false
+    return applyRotationIndex(pickNextRotationIndex(), true)
+  }
+
   const isoWeekKey = (d: Date): string => {
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
     const day = t.getUTCDay() || 7
@@ -327,11 +358,24 @@ export function apply(ctx: Ctx): void {
 
   const rotationDue = (): boolean => {
     const rot = rRotation()
-    if (!rot.enabled || rot.items.length === 0) return false
+    if (!rot.enabled) return false
+    // Folder mode has no pool to consult; an empty pool blocks, an unset folder
+    // is equally nothing to rotate through. The dual-folder mode needs BOTH
+    // directories for the same reason — half a pair is not a rotation.
+    if (rot.source === 'folders') {
+      if (rot.folder === null || rot.folderRight === null) return false
+    } else if (rot.source === 'folder') {
+      if (rot.folder === null) return false
+    } else if (rot.items.length === 0) return false
     if (rot.interval === 'reload') return true
     const last = rot.lastRotate !== null ? new Date(rot.lastRotate) : null
     if (last === null || isNaN(last.getTime())) return true
     const now = new Date()
+    // Mirror the node half's due check; `minutes` is the only cadence that can
+    // fall due while the page simply stays open, which is why it needs the tick.
+    // Its gap is the operator's own, read through the same clamp the node half
+    // applies so the two halves cannot disagree about what is due.
+    if (rot.interval === 'minutes') return now.getTime() - last.getTime() >= rotGapMs(rot)
     if (rot.interval === 'daily') return last.toDateString() !== now.toDateString()
     return isoWeekKey(last) !== isoWeekKey(now)
   }
@@ -348,9 +392,28 @@ export function apply(ctx: Ctx): void {
     return (rot.current + 1) % n
   }
 
+  // Guards against a second advance starting while one is in flight. Only the
+  // minute-based cadence can realistically hit this: its tick fires every 30 s
+  // and an advance copies a whole wallpaper (several MB from a real folder)
+  // before it stamps `lastRotate`, so without this the next tick would see the
+  // still-stale stamp and rotate again immediately.
+  let rotateInFlight = false
   const maybeRotate = async (): Promise<void> => {
+    if (rotateInFlight) return
     if (!rotationDue()) return
-    await applyRotationIndex(pickNextRotationIndex(), true)
+    rotateInFlight = true
+    try {
+      // Folder mode has no item indexes: the node half owns both the listing and
+      // the choice, so the client only asks it to move on.
+      const src = rRotation().source
+      if (src === 'folder' || src === 'folders') {
+        await advanceFolderMode()
+        return
+      }
+      await applyRotationIndex(pickNextRotationIndex(), true)
+    } finally {
+      rotateInFlight = false
+    }
   }
 
   // ── Day/night profile schedule ───────────────────────────────────────────────
@@ -431,19 +494,7 @@ export function apply(ctx: Ctx): void {
       await maybeRotate()
     }
     // Regenerate on reload if enabled, else reconstruct from saved params.
-    if (cfg.backgroundType === 'video') {
-      const v = rWpVideo()
-      if (v) {
-        // The frame snapshot is not persisted: re-capture it for previews.
-        captureAndApplyVideo(v)
-        applyWp()
-      } else {
-        // Stored video missing: fall back to the retained image slot.
-        cfg.backgroundType = 'image'
-        setWpUrl(rWpImage())
-        applyThemeColor()
-      }
-    } else if (cfg.backgroundType !== 'image') {
+    if (cfg.backgroundType !== 'image') {
       if (cfg.regenerateOnReload) {
         regenerateGeneratedBg()
       } else if (cfg.generatedBg) {
@@ -463,9 +514,21 @@ export function apply(ctx: Ctx): void {
   // immediately when the OS scheme flips in 'system' mode.
   const schemeMq = window.matchMedia?.('(prefers-color-scheme: dark)')
   const scheduleTimer = window.setInterval(scheduleTick, 30_000)
+  // Rotation cadence. Only the `minutes` cadence can fall due while the page
+  // just sits there: the dated intervals are settled by the server during `read`
+  // (page load / reload), so they need no tick. Polling every 30s instead of
+  // sleeping for the configured gap keeps a backgrounded tab's throttled timers
+  // from making the real cadence noticeably late, and costs one timestamp
+  // comparison per hit. `maybeRotate` is a no-op for any other interval.
+  const rotationTick = (): void => {
+    if (rRotation().interval !== 'minutes') return
+    void maybeRotate()
+  }
+  const rotationTimer = window.setInterval(rotationTick, 30_000)
   schemeMq?.addEventListener?.('change', scheduleTick)
   ctx.effect(() => () => {
     window.clearInterval(scheduleTimer)
+    window.clearInterval(rotationTimer)
     schemeMq?.removeEventListener?.('change', scheduleTick)
   }, 'dsh-any-background: schedule timer')
   ctx.effect(() => () => { teardownWp() }, 'dsh-any-background: wp cleanup')
@@ -529,26 +592,6 @@ export function apply(ctx: Ctx): void {
     // store's boot-time defaults.
     syncBg()
     syncMetaNow()
-    // Play a picked/imported video instantly from a local object URL while its
-    // raw bytes stream to disk in the background — no upload + first-buffer
-    // wait after import. The serve URL takes over on the next reload. The
-    // upload's outcome is returned so the panel can report a refusal: a video
-    // that streams to disk but is refused (oversized) still plays locally and
-    // would otherwise look saved.
-    const playVideoFromBlob = (blob: Blob, mime: string | null): Promise<UploadOutcome> => {
-      const localUrl = URL.createObjectURL(blob)
-      cfg.backgroundType = 'video'
-      setWpUrl(null)
-      cfg.videoBgState = { ...DEFAULT_CONFIG.bgState }
-      setWpVideoUrl(localUrl, mime ?? blob.type ?? 'video/mp4')
-      applyWp()
-      syncBg()
-      captureAndApplyVideo(rWpVideo())
-      return uploadVideo(blob, mime ?? blob.type ?? 'video/mp4').then(outcome => {
-        if (outcome.ok) persistConfig()
-        return outcome
-      })
-    }
     // ── Custom interface font ────────────────────────────────────────────────
     // The file itself lives in the server-side font slot (see uploadFont); the
     // UI only ever sees GTK's serve URL. A picked file is additionally rendered
@@ -598,55 +641,25 @@ export function apply(ctx: Ctx): void {
       // Server-side set: the wallpaper bytes are ALREADY persisted by the caller
       // (raw upload / URL download / rotation), so this only switches the theme
       // to image mode and points the display at the serve URL. null removes the
-      // stored image and video.
+      // stored image.
       setWpFromServer: (u: string | null) => {
         cfg.backgroundType = 'image'
         // Retain the upload in its own slot so type switches never lose it.
         // The generated-background brightness verdict stops applying here.
         setBgDark(null)
         setWpImageUrl(u)
+        // A hand-picked single image owns the whole wall, so dual mode's right
+        // lane is dropped rather than left showing the last rotation's picture.
+        setWpImageRightUrl(null)
         // Mirror the same rev'd URL so wpUrl and the display never diverge.
         setWpUrl(rWpImage())
         setBgState({ ...DEFAULT_CONFIG.bgState })
         if (u === null) {
-          // Removing the background clears the stored video as well.
-          setWpVideoUrl(null, null)
-          void persistVideo(null)
+          // Removing the background clears the stored image as well.
           persistWallpaper(null)
         }
         applyThemeColor()
         syncBg()
-      },
-      setVideo: async (u: Blob | string | null, mime: string | null): Promise<UploadOutcome> => {
-        setBgDark(null)
-        if (u === null) {
-          // Removing: clear the stored video and return to the image slot.
-          setWpVideoUrl(null, null)
-          cfg.backgroundType = 'image'
-          setWpUrl(rWpImage())
-          void persistVideo(null)
-          applyThemeColor()
-          syncBg()
-          saveConfig()
-          return { ok: true }
-        }
-        if (typeof u !== 'string') {
-          // A picked file plays instantly from a local object URL while its raw
-          // bytes stream to disk in the background — no upload + buffer wait.
-          return playVideoFromBlob(u, mime)
-        }
-        // Legacy data-URL string path: persist, then play from the serve URL.
-        const ok = await persistVideo(u)
-        const live = ok ? VIDEO_SERVE_URL : u
-        cfg.backgroundType = 'video'
-        setWpUrl(null)
-        cfg.videoBgState = { ...DEFAULT_CONFIG.bgState }
-        setWpVideoUrl(live, mime ?? null)
-        applyWp()
-        saveConfig()
-        syncBg()
-        captureAndApplyVideo(rWpVideo())
-        return { ok }
       },
       setBgType: (type: BackgroundType) => {
         setBackgroundType(type)
@@ -713,6 +726,7 @@ export function apply(ctx: Ctx): void {
       },
       setWop: (v: number) => { cfg.wallpaperOpacity = v; applyWp(); syncBg(); saveConfig() },
       setBl: (v: number) => { cfg.blur = v; applyWp(); syncBg(); saveConfig() },
+      setEdgeFade: (v: number) => { cfg.wpEdgeFade = v; setWpEdgeFade(); syncBg(); saveConfig() },
       setSop: (v: number) => { cfg.settingsOpacity = v; applySettingsOverrides(v); saveConfig() },
       setPanelOp: (v: number) => { cfg.panelOpacity = v; applyPanelOverrides(v); saveConfig() },
       // One-click: derive a theme color from the current wallpaper. Purely
@@ -720,10 +734,7 @@ export function apply(ctx: Ctx): void {
       extractColor: async (): Promise<boolean> => {
         const url = rWp()
         if (!url) return false
-        // Video mode extracts from the frame snapshot through the video's
-        // placement state (rWp already returns the snapshot there).
-        const st = cfg.backgroundType === 'video' ? rVideoBgState() : rBgState()
-        const hsl = await extractWallpaperColor(url, st)
+        const hsl = await extractWallpaperColor(url, rBgState())
         if (!hsl) return false
         cfg.color = hsl
         registerCustom(hsl[0], hsl[1], hsl[2])
@@ -735,28 +746,10 @@ export function apply(ctx: Ctx): void {
         return true
       },
       // Download the whole theme as dsh-any-theme.json: the config plus the
-      // wallpaper data URL only when it is an uploaded image, and the video
-      // bytes copied in as a data URL when a video background is active.
-      // Generated backgrounds are reconstructed from the saved params on
-      // import, so their exports stay small.
+      // wallpaper data URL when it is an uploaded image. Generated backgrounds
+      // are reconstructed from the saved params on import, so their exports
+      // stay small.
       exportTheme: async () => {
-        let videoPayload: string | null = null
-        if (cfg.backgroundType === 'video') {
-          const vurl = rWpVideo()
-          if (vurl) {
-            try {
-              const blob = await fetch(vurl).then(r => r.blob())
-              videoPayload = await blobToDataUrl(blob)
-              // The serve route may report a generic Content-Type; pin the
-              // recorded MIME so the import detector sees data:video/….
-              if (videoPayload && !/^data:video\//.test(videoPayload)) {
-                videoPayload = videoPayload.replace(/^data:[^;,]*/, `data:${cfg.videoMime ?? 'video/mp4'}`)
-              }
-            } catch {
-              videoPayload = null
-            }
-          }
-        }
         // The wallpaper is displayed through the serve URL; exports embed the
         // bytes (fetched from that URL) so the file is portable.
         let wallpaperPayload: string | null = null
@@ -780,7 +773,6 @@ export function apply(ctx: Ctx): void {
           exportedAt: new Date().toISOString(),
           config: cfg,
           wallpaper: wallpaperPayload,
-          video: videoPayload,
         }
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
         const url = URL.createObjectURL(blob)
@@ -801,40 +793,10 @@ export function apply(ctx: Ctx): void {
         try {
           const data: unknown = JSON.parse(await file.text())
           if (!data || typeof data !== 'object') return false
-          const d = data as { version?: number; config?: unknown; wallpaper?: unknown; video?: unknown }
+          const d = data as { version?: number; config?: unknown; wallpaper?: unknown }
           if (typeof d.config !== 'object' || d.config === null) return false
           adoptConfig(d.config)
-          if (cfg.backgroundType === 'video') {
-            const video = typeof d.video === 'string' && /^data:video\//.test(d.video) ? d.video : null
-            if (video !== null) {
-              // Decode the embedded data URL to a blob and play it instantly
-              // from a local object URL while the bytes stream to disk in the
-              // background (the data-URL RPC path stays as the small fallback).
-              let blob: Blob | null = null
-              try { blob = await fetch(video).then(r => r.blob()) } catch { blob = null }
-              if (blob !== null) {
-                // Fire and forget: the import's own success/failure is already
-                // reported, and the embedded video typically exceeds the upload
-                // limit anyway (the same cap that made the fetch path win).
-                void playVideoFromBlob(blob, cfg.videoMime)
-              } else {
-                const ok = await persistVideo(video)
-                const live = ok ? VIDEO_SERVE_URL : video
-                setWpVideoUrl(live, cfg.videoMime)
-                applyWp()
-                captureAndApplyVideo(rWpVideo())
-              }
-            } else {
-              // Export lacked the video payload: fall back to no background.
-              setWpVideoUrl(null, null)
-              void persistVideo(null)
-              cfg.backgroundType = 'image'
-              setWpImageUrl(null)
-              setWpUrl(null)
-              persistWallpaper(null)
-              applyThemeColor()
-            }
-          } else if (cfg.backgroundType === 'image') {
+          if (cfg.backgroundType === 'image') {
             const wallpaper = typeof d.wallpaper === 'string' && /^data:image\//.test(d.wallpaper) ? d.wallpaper : null
             setWpImageUrl(wallpaper)
             setWpUrl(wallpaper)
@@ -926,9 +888,25 @@ export function apply(ctx: Ctx): void {
         persistConfig()
         syncMetaNow()
       },
-      setRotation: (patch: Partial<Pick<typeof cfg.rotation, 'enabled' | 'mode' | 'interval'>>): void => {
+      setRotation: (patch: Partial<typeof cfg.rotation>): void => {
         cfg.rotation = { ...rRotation(), ...patch }
-        if (patch.enabled === true) void maybeRotate()
+        // Shortening the gap can make the rotation due the moment it is saved
+        // (last advance was 5 minutes ago, gap just went 60 -> 1). Re-check so
+        // the setting takes visible effect now instead of at the next tick.
+        // Fires only for gap edits on an enabled rotation; the other chips keep
+        // their previous behaviour of waiting for the tick or the next read.
+        if (patch.enabled === true || (patch.intervalMinutes !== undefined && cfg.rotation.enabled)) void maybeRotate()
+        // Dual mode changes the SHAPE of the wall, not just a number: turning it
+        // on must land a right lane immediately (otherwise the toggle looks
+        // inert until the next rotation), and turning it off must drop the lane
+        // the current picture does not own. A patch carrying an explicit
+        // laneItems is the advance's own bookkeeping, so it is left alone.
+        if (patch.dual !== undefined && patch.laneItems === undefined) {
+          if (!patch.dual) setWpImageRightUrl(null)
+          else if (cfg.rotation.enabled && cfg.rotation.source === 'pool' && cfg.rotation.items.length > 1) {
+            void rotateOnceNow()
+          }
+        }
         persistConfig()
         syncMetaNow()
       },
@@ -941,7 +919,9 @@ export function apply(ctx: Ctx): void {
           const thumb = await makeThumb(dataUrl)
           const r = await rotationAdd(dataUrl, thumb ?? '')
           if (r.ok && r.items !== undefined) {
-            cfg.rotation = { ...rRotation(), items: r.items as RotationItem[] }
+            // Adding to the pool means the pool is the source again; mirror the
+            // same reset the node half applies for an older browser half.
+            cfg.rotation = { ...rRotation(), source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0, items: r.items as RotationItem[] }
             added = true
           }
         }
@@ -967,28 +947,50 @@ export function apply(ctx: Ctx): void {
         syncMetaNow()
         return true
       },
-      rotateNow: async (): Promise<boolean> => {
-        if (rRotation().items.length === 0) return false
-        return applyRotationIndex(pickNextRotationIndex(), true)
-      },
-      // Network video URL: the server streams it into the video slot; the
-      // client switches to video mode and plays from the serve URL, then
-      // captures the preview frame through the same path as local uploads.
-      setVideoFromUrl: async (url: string): Promise<boolean> => {
-        const r = await rpcSetVideoFromUrl(url)
-        if (!r.ok || !r.mime) {
-          console.warn('dsh-any-background: video url fetch failed', r.error)
-          return false
+      rotateNow: async (): Promise<boolean> => rotateOnceNow(),
+      canPickFolder: (): boolean => folderPickerAvailable,
+      pickRotationFolder: async (lane: 'left' | 'right' = 'left'): Promise<{ ok: boolean; error?: string; folder?: string; count?: number; previewed?: boolean }> => {
+        const r = await rpcPickRotationFolder(lane)
+        if (!r.ok) return r
+        // The node half already adopted the folder, previewed it (when rotation
+        // is on and BOTH lanes now have a directory) and persisted it all before
+        // answering: mirror that rotation instead of re-saving, or a save queued
+        // here would write the local state back over the server's. Never advance
+        // again — the preview already consumed the first slot, and in order mode
+        // a second advance would skip index 0.
+        if (r.rotation) cfg.rotation = r.rotation
+        syncMetaNow()
+        if (r.previewed) {
+          // The slot was reloaded in place, so the URL is unchanged: bump the
+          // cache-busting rev and re-read the palette from the new picture.
+          setWpImageUrl(WALLPAPER_SERVE_URL)
+          // A previewed pick is by definition a pair, so the right slot is real;
+          // pointing at the serve URL with a fresh rev also covers the case where
+          // the left lane had been showing while the right one was empty.
+          setWpImageRightUrl(WALLPAPER_RIGHT_SERVE_URL)
+          cfg.backgroundType = 'image'
+          setBgDark(null)
+          setWpUrl(rWpImage())
+          setBgState({ ...DEFAULT_CONFIG.bgState })
+          if (cfg.backgroundType === 'image') await adoptWallpaperColor(rWp()!)
+          applyThemeColor()
+          syncBg()
+          saveConfig()
         }
-        setBgDark(null)
-        cfg.backgroundType = 'video'
-        setWpUrl(null)
-        cfg.videoBgState = { ...DEFAULT_CONFIG.bgState }
-        setWpVideoUrl(VIDEO_SERVE_URL, r.mime)
-        applyWp()
-        saveConfig()
-        syncBg()
-        captureAndApplyVideo(rWpVideo())
+        return r
+      },
+      clearRotationFolder: async (): Promise<boolean> => {
+        if (!(await rpcClearRotationFolder())) return false
+        // The server drops BOTH directory paths: the two lanes are one source, so
+        // leaving the right one behind would keep the wall split after the
+        // operator asked it to stop being one. `dual` survives — it is the
+        // shape of the wall, not part of the folder source.
+        cfg.rotation = { ...rRotation(), source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0, current: 0, laneItems: [], lastRotate: null }
+        // Folder mode owned both lanes; with the folder gone the right lane has
+        // no slot behind it, so stop pointing the layer at a stale file.
+        setWpImageRightUrl(null)
+        persistConfig()
+        syncMetaNow()
         return true
       },
     }

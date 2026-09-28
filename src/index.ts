@@ -7,14 +7,10 @@
  *
  *   theme-config.json   settings
  *   wallpaper.jpg       background image
- *   wallpaper.<ext>     background video, named by MIME (mp4/webm/ogv/mov/mkv);
- *                       played over HTTP route /dsh-any-background/video and
- *                       uploaded to /dsh-any-background/video/upload as raw
- *                       bytes — never base64 through the RPC channel.
  */
-import { access, mkdir, readFile, writeFile, rm, rename, stat } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, writeFile, rm, rename, stat } from 'node:fs/promises'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { Readable } from 'node:stream'
+import { isAbsolute, join } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { resolveHostInfo, type HostInfo } from './host-compat/detect'
 import { UNKNOWN_HOST_INFO } from './host-compat/channel'
@@ -28,43 +24,33 @@ const WALLPAPER_FILE = 'wallpaper.jpg'
 // Rotation pool: each candidate wallpaper lives here as its own file; the
 // config index stores { file, thumb } entries pointing into this directory.
 const ROTATION_DIR = 'rotation'
-const VIDEO_ROUTE = '/dsh-any-background/video'
-const UPLOAD_ROUTE = '/dsh-any-background/video/upload'
+// Folder mode reads its candidates in place from a directory the operator
+// picked, so the list is only bounded here (a wallpaper folder with more
+// pictures than this keeps its first names in sort order). The list is walked
+// per advance and never persisted — only the count is — so the bound guards
+// against a pathological directory (or a mis-picked drive root) rather than
+// against memory. 500 silently trimmed a 3975-image folder down by 87%.
+const MAX_FOLDER_IMAGES = 20000
 const WALLPAPER_ROUTE = '/dsh-any-background/wallpaper'
+// Dual mode's second pane. Kept as its own slot rather than a second picture
+// inside wallpaper.jpg because the two panes have independent geometry: each
+// one is drawn with its own object-fit inside its own half of the viewport.
+const WALLPAPER_RIGHT_FILE = 'wallpaper-right.jpg'
+const WALLPAPER_RIGHT_ROUTE = '/dsh-any-background/wallpaper-right'
 const WALLPAPER_UPLOAD_ROUTE = '/dsh-any-background/wallpaper/upload'
 const FONT_ROUTE = '/dsh-any-background/font'
 const FONT_UPLOAD_ROUTE = '/dsh-any-background/font/upload'
 const UPLOAD_TMP = 'wallpaper.upload.tmp'
-const VIDEO_UPLOAD_TMP = 'video.upload.tmp'
 const FONT_UPLOAD_TMP = 'font.upload.tmp'
 const WALLPAPER_UPLOAD_MAX = 100 * 1024 * 1024
-const VIDEO_UPLOAD_MAX = 2 * 1024 * 1024 * 1024
 // CJK font files routinely reach tens of MB; the cap only guards the drive.
 const FONT_UPLOAD_MAX = 100 * 1024 * 1024
 // Network-URL wallpaper fetch: cap the download and time it out so a bad link
-// can't stall the UI or fill the drive. The video variant streams (never
-// buffered whole) with its own, larger caps.
+// can't stall the UI or fill the drive.
 const WALLPAPER_FETCH_MAX = 25 * 1024 * 1024
 const WALLPAPER_FETCH_TIMEOUT = 20_000
-const VIDEO_FETCH_MAX = 2 * 1024 * 1024 * 1024
-const VIDEO_FETCH_TIMEOUT = 60_000
-// Once streaming, a hard total-time budget would reject a 2 GB download on
-// slower links; watch for inactivity instead (no bytes for this long = dead).
-const VIDEO_FETCH_IDLE_TIMEOUT = 60_000
 
-function videoFileName(mime: string | null): string {
-  switch (mime) {
-    case 'video/mp4': return 'wallpaper.mp4'
-    case 'video/webm': return 'wallpaper.webm'
-    case 'video/ogg': return 'wallpaper.ogv'
-    case 'video/quicktime': return 'wallpaper.mov'
-    case 'video/x-matroska': return 'wallpaper.mkv'
-    default: return 'wallpaper.video'
-  }
-}
-const VIDEO_CANDIDATES = ['wallpaper.mp4', 'wallpaper.webm', 'wallpaper.ogv', 'wallpaper.mov', 'wallpaper.mkv', 'wallpaper.video']
-
-/** Font slot: one font owns the slot, named by format like the video slot. */
+/** Font slot: one font owns the slot, named by format. */
 function fontFileName(mime: string | null): string {
   switch (mime) {
     case 'font/woff2': return 'font.woff2'
@@ -103,7 +89,7 @@ interface StrokeConfig {
   customColor: string
 }
 type PartStrokes = Record<keyof PartBlurs, StrokeConfig>
-type BackgroundType = 'image' | 'video' | 'mesh' | 'shader' | 'pattern'
+type BackgroundType = 'image' | 'mesh' | 'shader' | 'pattern'
 type BgMode = 'fit' | 'fill' | 'stretch' | 'tile' | 'center'
 type SchemeOverride = 'auto' | 'light' | 'dark'
 type GeneratedBgParams =
@@ -120,6 +106,8 @@ interface ProfileAppearance {
   strokes: PartStrokes
   settingsOpacity: number
   wallpaperOpacity: number
+  /** Feather width for the picture's edge, as a percentage of its shorter side. */
+  wpEdgeFade: number
   blur: number
   chatTextOpacity: number
   trajectoryOpacity: number
@@ -129,10 +117,57 @@ interface ProfileAppearance {
 }
 interface ProfileEntry { id: string; name: string; createdAt: string; config: ProfileAppearance }
 interface RotationItem { file: string; thumb: string }
+/** Where a rotation pool's candidates come from: the built-in pool of files
+ *  copied into `rotation/`, a single directory of the operator's own that is
+ *  read in place, or two directories — one per dual lane — read in place at the
+ *  same time. `folder` is null in pool mode, and `folderRight` only carries a
+ *  path in the dual-folder mode. */
+type RotationSource = 'pool' | 'folder' | 'folders'
+/** How often a rotation may advance. The dated ones differ by calendar unit;
+ *  `minutes` is a wall-clock gap the browser half ticks, so it keeps advancing
+ *  while the page stays open, and its length is the operator's own
+ *  `intervalMinutes`. */
+type RotationInterval = 'reload' | 'minutes' | 'daily' | 'weekly'
+/** Bounds of the `minutes` cadence, applied by both halves so an edited config
+ *  cannot ask for a sub-minute timer (a whole wallpaper is copied per advance)
+ *  or for a gap longer than a day (that is what `daily` is for). */
+const INTERVAL_MINUTES_MIN = 1
+const INTERVAL_MINUTES_MAX = 1440
 interface RotationConfig {
   enabled: boolean
+  source: RotationSource
+  /** Absolute path of the folder mode directory (null in pool mode, and the
+   *  LEFT lane of the dual-folder mode). */
+  folder: string | null
+  /** Images found in `folder` at pick time (display only; never persisted). */
+  folderCount: number
+  /** Absolute path of the RIGHT lane's directory in the dual-folder mode (null
+   *  in every other mode). Kept as its own field rather than reusing `folder`
+   *  because the two lanes are the point: one directory per side, each read in
+   *  place, while `mode` and the cadence stay shared — the operator asked for
+   *  two sources, not two rotations. */
+  folderRight: string | null
+  /** Images found in `folderRight` at pick time (display only; never
+   *  persisted). */
+  folderRightCount: number
   mode: 'shuffle' | 'order'
-  interval: 'reload' | 'daily' | 'weekly'
+  interval: RotationInterval
+  /** Wall-clock gap between advances, in minutes, for the `minutes` cadence.
+   *  Ignored by the calendar cadences, which is why it is not folded into
+   *  `interval` itself: switching to `minutes` and back must not forget it. */
+  intervalMinutes: number
+  /** Show two different images at once, one hugging each side of the viewport,
+   *  instead of one image across the middle. The host's own columns sit on top
+   *  of the wall, so a picture centred the way a single-image wallpaper is
+   *  lands its subject under the conversation sidebar; splitting the wall into
+   *  a left and a right pane puts both subjects in the strips the host leaves
+   *  clear. Both panes advance together on one cadence — this is a way of
+   *  drawing a step, not a second rotation. */
+  dual: boolean
+  /** Names last painted into the two dual panes, in `items` order. Held so a
+   *  shuffle step can pick the NEXT index without either pane repeating what
+   *  the other pane is already showing. */
+  laneItems: string[]
   current: number
   items: RotationItem[]
   lastRotate: string | null
@@ -154,12 +189,12 @@ interface ThemeConfig {
   strokes: PartStrokes
   settingsOpacity: number
   wallpaperOpacity: number
+  /** Feather width for the picture's edge, as a percentage of its shorter side. */
+  wpEdgeFade: number
   blur: number
   bgState: BgState
-  videoBgState: BgState
   backgroundType: BackgroundType
   bgMode: BgMode
-  videoMime: string | null
   /** MIME of the persisted custom font (null when none stored). */
   fontMime: string | null
   /** Whether the stored custom font is applied to the interface. */
@@ -212,12 +247,11 @@ export const DEFAULT_CONFIG: ThemeConfig = {
   },
   settingsOpacity: 0.5,
   wallpaperOpacity: 1,
+  wpEdgeFade: 0,
   blur: 0,
   bgState: { zoom: 1, x: 0, y: 0, iw: 0, ih: 0 },
-  videoBgState: { zoom: 1, x: 0, y: 0, iw: 0, ih: 0 },
   backgroundType: 'image',
   bgMode: 'fit',
-  videoMime: null,
   fontMime: null,
   fontEnabled: true,
   generatedBg: null,
@@ -228,7 +262,7 @@ export const DEFAULT_CONFIG: ThemeConfig = {
   producedOpacity: 0.5,
   headerOpacity: 0.5,
   profiles: [],
-  rotation: { enabled: false, mode: 'shuffle', interval: 'daily', current: 0, items: [], lastRotate: null },
+  rotation: { enabled: false, source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0, mode: 'shuffle', interval: 'daily', intervalMinutes: 5, dual: false, laneItems: [], current: 0, items: [], lastRotate: null },
   schedule: { enabled: false, mode: 'time', dayProfile: null, nightProfile: null, dayStart: '07:00', nightStart: '19:00' },
   schemeOverride: 'auto',
   activeProfile: null,
@@ -243,36 +277,17 @@ export const DEFAULT_CONFIG: ThemeConfig = {
 const dataDir = (): string => dshHomePath(DATA_DIR)
 const configPath = (): string => dshHomePath(DATA_DIR, CONFIG_FILE)
 const wallpaperPath = (): string => dshHomePath(DATA_DIR, WALLPAPER_FILE)
-const videoPathFor = (mime: string | null): string => dshHomePath(DATA_DIR, videoFileName(mime))
+const wallpaperRightPath = (): string => dshHomePath(DATA_DIR, WALLPAPER_RIGHT_FILE)
 const fontPathFor = (mime: string | null): string => dshHomePath(DATA_DIR, fontFileName(mime))
 
 const exists = async (p: string): Promise<boolean> => { try { await access(p); return true } catch { return false } }
-
-/** Locate the stored video: the recorded MIME decides the expected name; a
- *  legacy extensionless wallpaper.video is renamed on first access. */
-async function findVideoFile(): Promise<{ path: string; mime: string | null } | null> {
-  const cfg = await readConfig()
-  const expected = videoPathFor(cfg.videoMime)
-  if (await exists(expected)) return { path: expected, mime: cfg.videoMime }
-  for (const name of VIDEO_CANDIDATES) {
-    const p = dshHomePath(DATA_DIR, name)
-    if (!(await exists(p))) continue
-    if (cfg.videoMime !== null && name !== videoFileName(cfg.videoMime)) {
-      // Stray file from a lost config write: adopt it via rename.
-      try { await rename(p, expected); return { path: expected, mime: cfg.videoMime } } catch { return null }
-    }
-    return { path: p, mime: cfg.videoMime }
-  }
-  return null
-}
 
 function clamp(n: unknown, lo: number, hi: number, def: number): number {
   return typeof n === 'number' && isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def
 }
 
 /** Locate the stored font: the recorded MIME decides the expected name; stray
- *  files from a lost config write are adopted via rename (mirrors the video
- *  slot's recovery). */
+ *  files from a lost config write are adopted via rename. */
 async function findFontFile(): Promise<{ path: string; mime: string } | null> {
   const cfg = await readConfig()
   const mime = cfg.fontMime ?? 'font/ttf'
@@ -338,7 +353,7 @@ function normalizeConfig(raw: unknown): ThemeConfig {
     Array.isArray(c) && c.length === 3 && c.every(x => typeof x === 'number' && isFinite(x))
       ? [clamp(c[0], 0, 360, 220), clamp(c[1], 0, 1, 0.55), clamp(c[2], 0, 1, 0.25)]
       : null
-  const bgType: BackgroundType = ['image', 'video', 'mesh', 'shader', 'pattern'].includes(r.backgroundType as string)
+  const bgType: BackgroundType = ['image', 'mesh', 'shader', 'pattern'].includes(r.backgroundType as string)
     ? (r.backgroundType as BackgroundType)
     : DEFAULT_CONFIG.backgroundType
   const bgMode: BgMode = ['fit', 'fill', 'stretch', 'tile', 'center'].includes(r.bgMode as string)
@@ -371,12 +386,11 @@ function normalizeConfig(raw: unknown): ThemeConfig {
     strokes: normalizeStrokes(r.strokes),
     settingsOpacity: clamp(r.settingsOpacity, 0, 1, DEFAULT_CONFIG.settingsOpacity),
     wallpaperOpacity: clamp(r.wallpaperOpacity, 0, 1, DEFAULT_CONFIG.wallpaperOpacity),
+    wpEdgeFade: clamp(r.wpEdgeFade, 0, 100, DEFAULT_CONFIG.wpEdgeFade),
     blur: clamp(r.blur, 0, 60, DEFAULT_CONFIG.blur),
     bgState: normalizeBgState((r.bgState ?? {}) as Partial<BgState>),
-    videoBgState: normalizeBgState((r.videoBgState ?? {}) as Partial<BgState>),
     backgroundType: bgType,
     bgMode,
-    videoMime: typeof r.videoMime === 'string' ? r.videoMime : null,
     fontMime: typeof r.fontMime === 'string' ? r.fontMime : null,
     fontEnabled: typeof r.fontEnabled === 'boolean' ? r.fontEnabled : DEFAULT_CONFIG.fontEnabled,
     generatedBg,
@@ -454,6 +468,7 @@ function normalizeProfileAppearance(raw: unknown): ProfileAppearance {
     strokes: normalizeStrokes(a.strokes),
     settingsOpacity: clamp(a.settingsOpacity, 0, 1, DEFAULT_CONFIG.settingsOpacity),
     wallpaperOpacity: clamp(a.wallpaperOpacity, 0, 1, DEFAULT_CONFIG.wallpaperOpacity),
+    wpEdgeFade: clamp(a.wpEdgeFade, 0, 100, DEFAULT_CONFIG.wpEdgeFade),
     blur: clamp(a.blur, 0, 60, DEFAULT_CONFIG.blur),
     chatTextOpacity: clamp(a.chatTextOpacity, 0, 1, DEFAULT_CONFIG.chatTextOpacity),
     trajectoryOpacity: clamp(a.trajectoryOpacity, 0, 1, DEFAULT_CONFIG.trajectoryOpacity),
@@ -502,10 +517,33 @@ function normalizeRotation(raw: unknown): RotationConfig {
       })
     }
   }
+  // A folder path is read by the server (never by the browser), so it must be
+  // an absolute one: a relative path would resolve against the process CWD.
+  const folder = typeof r.folder === 'string' && isAbsolute(r.folder) ? r.folder : null
+  const folderRight = typeof r.folderRight === 'string' && isAbsolute(r.folderRight) ? r.folderRight : null
+  // The dual-folder mode needs BOTH directories: the whole point is one source
+  // per lane, so a config that has only one of them is not that mode at all and
+  // falls back rather than silently painting the same directory twice.
+  const folders = r.source === 'folders' && folder !== null && folderRight !== null
+  // `minutes5` was the fixed five-minute cadence before the gap became
+  // adjustable; configs written back then carry that one word instead of the
+  // `minutes` + gap pair, so migrate them rather than dropping them to `daily`.
+  const legacyFast = (r as { interval?: unknown }).interval === 'minutes5'
   return {
     enabled: r.enabled === true,
+    source: folders ? 'folders' : r.source === 'folder' && folder !== null ? 'folder' : 'pool',
+    folder,
+    folderCount: typeof r.folderCount === 'number' && isFinite(r.folderCount) && r.folderCount > 0 ? Math.floor(r.folderCount) : 0,
+    folderRight,
+    folderRightCount: typeof r.folderRightCount === 'number' && isFinite(r.folderRightCount) && r.folderRightCount > 0 ? Math.floor(r.folderRightCount) : 0,
     mode: r.mode === 'order' ? 'order' : 'shuffle',
-    interval: r.interval === 'reload' || r.interval === 'weekly' ? r.interval : 'daily',
+    interval: legacyFast ? 'minutes'
+      : r.interval === 'reload' || r.interval === 'minutes' || r.interval === 'weekly' ? r.interval : 'daily',
+    intervalMinutes: clamp(r.intervalMinutes, INTERVAL_MINUTES_MIN, INTERVAL_MINUTES_MAX, legacyFast ? 5 : DEFAULT_CONFIG.rotation.intervalMinutes),
+    dual: r.dual === true,
+    laneItems: Array.isArray(r.laneItems)
+      ? r.laneItems.filter((n): n is string => typeof n === 'string' && n.length > 0).slice(0, 2)
+      : [],
     current: typeof r.current === 'number' && isFinite(r.current) && r.current >= 0 ? Math.floor(r.current) : 0,
     items,
     lastRotate: typeof r.lastRotate === 'string' ? r.lastRotate : null,
@@ -532,9 +570,9 @@ async function ensureDir(): Promise<void> {
   }
 }
 
-// Parsed-config cache keyed on (mtime, size): the video/font serve routes and
-// the read RPC all resolve their slot through readConfig, and a Range seek on
-// a looping video otherwise re-reads and re-parses the JSON on every request.
+// Parsed-config cache keyed on (mtime, size): the wallpaper and font serve
+// routes and the read RPC all resolve their slot through readConfig, and a
+// burst of requests otherwise re-reads and re-parses the JSON every time.
 // Invalidation is mtime-driven, plus an explicit drop in writeConfig below.
 let configCacheKey: { mtimeMs: number; size: number } | null = null
 let configCacheValue: ThemeConfig | null = null
@@ -657,6 +695,15 @@ async function writeConfig(config: ThemeConfig): Promise<boolean> {
 async function wallpaperServeUrl(): Promise<string | null> {
   try {
     return (await stat(wallpaperPath())).size > 0 ? WALLPAPER_ROUTE : null
+  } catch {
+    return null
+  }
+}
+
+/** Dual mode's right pane, null when nothing has been painted there yet. */
+async function wallpaperRightServeUrl(): Promise<string | null> {
+  try {
+    return (await stat(wallpaperRightPath())).size > 0 ? WALLPAPER_RIGHT_ROUTE : null
   } catch {
     return null
   }
@@ -822,14 +869,22 @@ async function handleRotationRemove(payload: unknown): Promise<{ ok: boolean; it
 
 /** Activate a rotation item: copy its bytes over the active wallpaper slot and
  *  return the serve URL so the client applies it live (bytes never round-trip
- *  through the RPC response). */
-async function handleRotationSet(payload: unknown): Promise<{ ok: boolean; wallpaperUrl?: string; error?: string }> {
+ *  through the RPC response). In folder mode the index addresses the current
+ *  listing of the picked directory instead of the stored pool. */
+async function handleRotationSet(payload: unknown): Promise<{ ok: boolean; wallpaperUrl?: string; wallpaperRightUrl?: string; error?: string }> {
   const idx = (payload as { index?: unknown } | null)?.index
   if (typeof idx !== 'number' || !isFinite(idx)) return { ok: false, error: 'invalid index' }
   const cfg = await readConfig()
+  if (cfg.rotation.source !== 'pool') return { ok: false, error: 'folder mode ignores item indexes' }
+  const n = cfg.rotation.items.length
   const i = Math.floor(idx)
   const item = cfg.rotation.items[i]
   if (item === undefined) return { ok: false, error: 'not found' }
+  // Dual mode draws the right pane from the same step, so activating a pool
+  // item paints both panes rather than leaving the previous pair's right half
+  // on screen next to the new left one.
+  const right = pickRotationPair(n, i, cfg.rotation.mode, cfg.rotation.dual).right
+  const rightItem = right >= 0 ? cfg.rotation.items[right] : undefined
   let buf: Buffer
   try {
     buf = await readFile(dshHomePath(DATA_DIR, ROTATION_DIR, item.file))
@@ -838,142 +893,303 @@ async function handleRotationSet(payload: unknown): Promise<{ ok: boolean; wallp
   }
   try {
     await writeFile(wallpaperPath(), buf)
+    if (rightItem !== undefined) {
+      await writeFile(wallpaperRightPath(), await readFile(dshHomePath(DATA_DIR, ROTATION_DIR, rightItem.file)))
+    }
   } catch (e) {
     console.error('dsh-any-background: failed to activate a rotation wallpaper', e)
     return { ok: false, error: 'write failed' }
   }
-  return { ok: true, wallpaperUrl: WALLPAPER_ROUTE }
+  return { ok: true, wallpaperUrl: WALLPAPER_ROUTE, wallpaperRightUrl: rightItem === undefined ? undefined : WALLPAPER_RIGHT_ROUTE }
 }
 
-async function videoUrl(): Promise<string | null> {
-  return (await findVideoFile()) ? VIDEO_ROUTE : null
+// ── Folder-backed rotation ────────────────────────────────────────────────────
+// Folder mode keeps the operator's own directory as the candidate list: nothing
+// is copied into the data dir (a wallpaper folder is often hundreds of MB), so
+// each advance reads exactly one file straight from the picked directory. The
+// browser never supplies a path of its own — the host's native chooser returns
+// it over the RPC — and the listing only ever holds bare file names produced by
+// readdir, so no request can reach outside the configured directory.
+
+/** Bare image file name, or null. The names come from the operator's own
+ *  directory, so dots and spaces are allowed; separators never are. */
+function safeImageName(name: unknown): string | null {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255) return null
+  if (name.includes('/') || name.includes('\\')) return null
+  return /\.(jpg|jpeg|png|gif|webp)$/i.test(name) ? name : null
 }
 
-/** Guess a video MIME from the URL's path extension (fallback for servers that
- *  send no precise Content-Type). */
-function videoMimeFromUrl(u: URL): string | null {
-  const p = u.pathname.toLowerCase()
-  if (/\.(mp4|m4v)$/.test(p)) return 'video/mp4'
-  if (/\.webm$/.test(p)) return 'video/webm'
-  if (/\.(ogg|ogv)$/.test(p)) return 'video/ogg'
-  if (/\.(mov|qt)$/.test(p)) return 'video/quicktime'
-  if (/\.(mkv|mk3d|mka)$/.test(p)) return 'video/x-matroska'
-  return null
+/** Images directly inside `dir`, in name order, capped at MAX_FOLDER_IMAGES.
+ *  Exported as a check seam for the folder-mode listing rules. */
+export async function listFolderImages(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  return entries
+    .filter(e => e.isFile() && safeImageName(e.name) !== null)
+    .map(e => e.name)
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, MAX_FOLDER_IMAGES)
 }
 
-/** Download a background video from a network URL and store it in the video
- *  slot (streamed to a temp file — never buffered whole), then record the MIME
- *  in the config so findVideoFile/serve resolve immediately. */
-async function writeVideoFromUrl(url: string | null): Promise<{ ok: boolean; mime?: string; error?: string }> {
-  if (url === null) return { ok: false, error: 'invalid url' }
-  let u: URL
-  try { u = new URL(url) } catch { return { ok: false, error: 'invalid url' } }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: 'unsupported scheme' }
-  let res: Response
+/** Next candidate index over `n` candidates: order walks forward, shuffle never
+ *  repeats the current pick when there is a choice. Exported as a check seam —
+ *  the browser half mirrors this rule for a due check. */
+export function pickRotationIndex(n: number, current: number, mode: 'shuffle' | 'order'): number {
+  if (n <= 0) return -1
+  if (mode === 'shuffle' && n > 1) {
+    let idx = current
+    while (idx === current) idx = Math.floor(Math.random() * n)
+    return idx
+  }
+  return ((current % n) + n + 1) % n
+}
+
+/** The index a dual step paints on the right, given the index it just landed on
+ *  for the left pane. -1 means "no right pane". This is the SECOND advance of
+ *  ONE rotation, not a second rotation: order steps to the very next name, and
+ *  shuffle walks a non-zero distance from `left`. Walking from `left` rather
+ *  than drawing again is what keeps the two panes from ever colliding — the
+ *  shuffle RNG is unseeded, so two independent draws can land on the same name. */
+export function nextLaneIndex(n: number, left: number, mode: 'shuffle' | 'order'): number {
+  if (n <= 1 || left < 0) return -1
+  return mode === 'shuffle' ? (left + 1 + Math.floor(Math.random() * (n - 1))) % n : (left + 1) % n
+}
+
+/** One dual rotation step: the index for the left pane and the index for the
+ *  right pane, or -1 for "no right pane" (dual off, or only one candidate).
+ *  Deliberately ONE draw, not two rotations: `left` is the ordinary next index,
+ *  and `right` is the index the SAME step lands on when advanced a second time —
+ *  the user's framing, "the same rotation advanced twice". When the pool holds
+ *  a single picture there is no second index to reach and the right pane drops
+ *  back to nothing rather than duplicating the left one. */
+export function pickRotationPair(n: number, current: number, mode: 'shuffle' | 'order', dual: boolean): { left: number; right: number } {
+  const left = pickRotationIndex(n, current, mode)
+  if (!dual) return { left, right: -1 }
+  return { left, right: nextLaneIndex(n, left, mode) }
+}
+
+/** The two file names a dual step just painted, in `items` order, for the
+ *  client mirror's `laneItems`. Empty when the pool cannot fill both panes. */
+function laneNames(items: RotationItem[], pair: { left: number; right: number }): string[] {
+  const names: string[] = []
+  const a = items[pair.left]
+  if (a !== undefined) names.push(a.file)
+  const b = pair.right >= 0 ? items[pair.right] : undefined
+  if (b !== undefined && b.file !== a?.file) names.push(b.file)
+  return names
+}
+
+/** The host's directory-chooser capability, or null when no picker is mounted
+ *  (an older host, or a remote one composed without the seam). Read per call:
+ *  the `auto` backend decides its side at boot and the answer is cheap. */
+function directoryPickerCapability(ctx: any): { kind: string; pick?: (signal: AbortSignal) => Promise<string | null> } | null {
   try {
-    const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), VIDEO_FETCH_TIMEOUT)
-    try { res = await fetch(url, { redirect: 'follow', signal: ctl.signal }) }
-    finally { clearTimeout(timer) }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error && e.name === 'AbortError' ? 'timeout' : 'network error' }
-  }
-  if (!res.ok) return { ok: false, error: `http ${res.status}` }
-  let mime = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
-  if (mime === '' || mime === 'application/octet-stream' || mime === 'binary/octet-stream') {
-    mime = videoMimeFromUrl(u) ?? 'video/mp4'
-  }
-  if (!mime.startsWith('video/')) return { ok: false, error: 'not a video' }
-  const declared = Number(res.headers.get('content-length') ?? '')
-  if (Number.isFinite(declared) && declared > VIDEO_FETCH_MAX) return { ok: false, error: 'too large' }
-  await ensureDir()
-  const tmp = dshHomePath(DATA_DIR, 'video.download.tmp')
-  const target = videoPathFor(mime)
-  try {
-    if (res.body === null) return { ok: false, error: 'empty response' }
-    const out = createWriteStream(tmp)
-    let received = 0
-    let failed = false
-    const nodeStream = Readable.fromWeb(res.body as any)
-    // The 2 GB cap makes a hard total-time budget meaningless on slower links;
-    // arm an inactivity watchdog that refreshes on every chunk instead.
-    let idle: NodeJS.Timeout | null = null
-    const clearIdle = (): void => { if (idle !== null) { clearTimeout(idle); idle = null } }
-    const pokeIdle = (): void => {
-      clearIdle()
-      idle = setTimeout(() => { nodeStream.destroy(); fail() }, VIDEO_FETCH_IDLE_TIMEOUT)
-    }
-    const fail = (): void => {
-      if (failed) return
-      failed = true
-      clearIdle()
-      out.destroy()
-      rmWhenClosed(out, tmp)
-    }
-    nodeStream.on('data', (chunk: Buffer) => {
-      pokeIdle()
-      received += chunk.byteLength
-      if (received > VIDEO_FETCH_MAX) {
-        nodeStream.destroy()
-        fail()
-      }
-    })
-    nodeStream.on('end', clearIdle)
-    nodeStream.on('aborted', fail)
-    nodeStream.on('error', fail)
-    out.on('error', fail)
-    pokeIdle()
-    await new Promise<void>((resolve, reject) => {
-      nodeStream.pipe(out)
-      out.on('finish', () => resolve())
-      out.on('close', () => { if (failed) reject(new Error('download failed')) })
-      nodeStream.on('error', () => reject(new Error('download failed')))
-    })
-    if (failed) return { ok: false, error: 'read failed' }
-    // One video owns the slot: clear every other variant, then promote.
-    for (const name of VIDEO_CANDIDATES) {
-      const p = dshHomePath(DATA_DIR, name)
-      if (p !== target) await rm(p, { force: true })
-    }
-    await rm(target, { force: true }) // Windows rename refuses to overwrite
-    await rename(tmp, target)
-    // Record the MIME server-side so the serve route resolves the correct
-    // file even before the client's next config write lands.
-    const cfg = await readConfig()
-    if (cfg.videoMime !== mime) {
-      cfg.videoMime = mime
-      await writeConfig(cfg)
-    }
-    return { ok: true, mime }
-  } catch (e) {
-    console.error('dsh-any-background: failed to download the background video', e)
-    void rm(tmp, { force: true })
-    return { ok: false, error: e instanceof Error && e.message === 'download failed' ? 'read failed' : 'write failed' }
+    const picker = ctx?.get?.('directoryPicker')
+    if (picker === null || typeof picker !== 'object' || typeof picker.capability !== 'function') return null
+    const cap = picker.capability()
+    return cap !== null && typeof cap === 'object' && typeof cap.kind === 'string' ? cap : null
+  } catch {
+    return null
   }
 }
 
-/** Persist a video from a data URL (null removes every variant); only used
- *  for removal and small legacy/import payloads. */
-async function writeVideo(dataUrl: string | null): Promise<boolean> {
-  await ensureDir()
-  try {
-    if (dataUrl === null) {
-      for (const name of VIDEO_CANDIDATES) await rm(dshHomePath(DATA_DIR, name), { force: true })
-      return true
+/** "Switch now": the operator pressed the button, so the cadence is skipped and
+ *  whichever source is in charge advances. Folder mode copies its next file and
+ *  hands the new rotation back. The pool path goes through the same due check
+ *  the automatic path uses — with `interval: 'reload'` that is always true, so
+ *  the button still advances — and then reports whether the right pane is now
+ *  painted, so the browser half can show or drop the second lane without
+ *  polling the file. */
+async function advanceForCaller(): Promise<{ ok: boolean; rotation?: RotationConfig; wallpaperUrl?: string; wallpaperRightUrl?: string }> {
+  const cfg = await readConfig()
+  if (cfg.rotation.source === 'folder' || cfg.rotation.source === 'folders') {
+    const r = await advanceFolderRotation(true)
+    if (!r.ok) return { ok: false, wallpaperRightUrl: await wallpaperRightServeUrl() ?? undefined }
+    // Which lanes a folder advance filled is recorded in `laneItems`, and that
+    // is the only honest source: a two-folder rotation reports its right lane
+    // whether or not `dual` happens to be set, and a lone picture reports none
+    // rather than pointing the browser half at a stale slot.
+    return {
+      ok: true,
+      rotation: r.rotation,
+      wallpaperUrl: WALLPAPER_ROUTE,
+      wallpaperRightUrl: (r.rotation?.laneItems.length ?? 0) > 1 ? WALLPAPER_RIGHT_ROUTE : undefined,
     }
-    const m = /^data:(video\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl)
-    if (!m) return false
-    const target = videoPathFor(m[1]!)
-    for (const name of VIDEO_CANDIDATES) {
-      const p = dshHomePath(DATA_DIR, name)
-      if (p !== target) await rm(p, { force: true })
-    }
-    await writeFile(target, Buffer.from(m[2]!, 'base64'))
-    return true
-  } catch (e) {
-    console.error('dsh-any-background: failed to write the background video', e)
-    return false
   }
+  const ok = await advanceRotationIfDue()
+  if (!ok) return { ok: false, wallpaperRightUrl: await wallpaperRightServeUrl() ?? undefined }
+  return { ok: true, rotation: (await readConfig()).rotation, wallpaperUrl: WALLPAPER_ROUTE, wallpaperRightUrl: await wallpaperRightServeUrl() ?? undefined }
+}
+
+/** Open the host's native folder chooser and adopt the picked directory as the
+ *  rotation source. Only a `native` capability can answer (the browse backend
+ *  serves listing primitives for an in-app browser instead); the client hides
+ *  the button when the kind is anything else. `lane` says which side of a dual
+ *  wall the pick belongs to: the LEFT lane alone is the single-folder mode, and
+ *  the right lane only ever exists alongside a left folder, so a right pick
+ *  without one is refused rather than stored as a half-configured pair. When
+ *  rotation is already on AND both lanes have a directory the pair is copied
+ *  over the wallpaper slots straight away, so the operator sees the finished
+ *  wall; a lone folder is stored but never previewed, because half a wall
+ *  reads as a bug. */
+async function handleRotationPickFolder(ctx: any, lane: 'left' | 'right' = 'left'): Promise<{ ok: boolean; folder?: string; count?: number; previewed?: boolean; rotation?: RotationConfig; error?: string }> {
+  const cap = directoryPickerCapability(ctx)
+  if (cap === null || cap.kind !== 'native' || typeof cap.pick !== 'function') return { ok: false, error: 'no folder picker' }
+  let picked: string | null
+  try {
+    picked = await cap.pick(new AbortController().signal)
+  } catch (e) {
+    console.warn('dsh-any-background: the folder chooser failed', e)
+    return { ok: false, error: 'picker failed' }
+  }
+  // null is an operator cancel, not a failure, and must not clear an existing
+  // folder; a non-absolute answer is a backend bug and is refused for the same
+  // reason normalizeRotation only ever stores an absolute path.
+  if (typeof picked !== 'string') return { ok: false, error: 'cancelled' }
+  if (!isAbsolute(picked)) return { ok: false, error: 'invalid path' }
+  let names: string[]
+  try {
+    names = await listFolderImages(picked)
+  } catch {
+    return { ok: false, error: 'unreadable' }
+  }
+  if (names.length === 0) return { ok: false, error: 'no images' }
+  // Fresh read-modify-write: only the rotation fields belong to this handler.
+  const cfg = await readConfig()
+  const prev = cfg.rotation
+  if (lane === 'right' && prev.folder === null) return { ok: false, error: 'no left folder' }
+  // Picking the right lane is what turns a single folder into a pair; picking
+  // the left one again on a pair must NOT drop the right directory, so the
+  // source only flips to `folders` when both paths are really present.
+  const folderRight = lane === 'right' ? picked : prev.folderRight
+  const folderRightCount = lane === 'right' ? names.length : prev.folderRightCount
+  const folder = lane === 'right' ? prev.folder : picked
+  const folderCount = lane === 'right' ? prev.folderCount : names.length
+  const rotation: RotationConfig = {
+    ...prev,
+    source: folderRight !== null ? 'folders' : 'folder',
+    folder,
+    folderCount,
+    folderRight,
+    folderRightCount,
+    current: 0,
+    lastRotate: null,
+  }
+  // An off rotation must never touch the wallpaper. When it is on, only a
+  // complete pair previews: a right pick finishes the pair, while a first-ever
+  // left pick leaves the wall alone until the operator chooses the right side.
+  // The stamp is dated because this copy IS the rotation for now — leaving it
+  // null would let the very next read replace the picture again.
+  if (rotation.enabled && rotation.folder !== null && rotation.folderRight !== null) {
+    try {
+      // Each lane previews the first name of ITS OWN directory. `names` is the
+      // listing of whatever was just picked, so on a right pick it describes the
+      // right directory: the left name has to be listed separately or the left
+      // slot is handed a file that only exists on the right.
+      const leftNames = lane === 'right' ? await listFolderImages(rotation.folder) : names
+      const firstLeft = leftNames[0]
+      const rightNames = await listFolderImages(rotation.folderRight)
+      const firstRight = rightNames[0]
+      if (firstLeft !== undefined) await writeFile(wallpaperPath(), await readFile(join(rotation.folder, firstLeft)))
+      if (firstRight !== undefined) await writeFile(wallpaperRightPath(), await readFile(join(rotation.folderRight, firstRight)))
+      rotation.laneItems = firstRight === undefined ? [] : [firstLeft!, firstRight]
+      rotation.lastRotate = new Date().toISOString()
+    } catch (e) {
+      console.warn('dsh-any-background: could not preview the picked folder', e)
+    }
+  }
+  if (!(await writeConfig({ ...cfg, rotation }))) return { ok: false, error: 'config write failed' }
+  return { ok: true, folder: picked, count: names.length, previewed: rotation.lastRotate !== null, rotation }
+}
+
+/** Advance a folder rotation to its next candidate: the chosen file is copied
+ *  over the wallpaper slot. `force` skips the cadence test (the operator pressed
+ *  "switch now"); the automatic path leaves it in place. The rotation this
+ *  landed on travels back to the caller, whose in-memory mirror would otherwise
+ *  save its stale index back over the advance (order mode would stick on one
+ *  file). A no-op while the pool is the source. */
+async function advanceFolderRotation(force: boolean): Promise<{ ok: boolean; rotation?: RotationConfig }> {
+  const cfg = await readConfig()
+  const rot = cfg.rotation
+  if (!rot.enabled) return { ok: false }
+  const dualFolders = rot.source === 'folders'
+  if (!dualFolders && rot.source !== 'folder') return { ok: false }
+  if (rot.folder === null) return { ok: false }
+  if (dualFolders && rot.folderRight === null) return { ok: false }
+  const now = new Date()
+  if (!force && !rotationIsDue(rot, now)) return { ok: false }
+  let names: string[]
+  try {
+    names = await listFolderImages(rot.folder)
+  } catch {
+    return { ok: false }
+  }
+  if (names.length === 0) return { ok: false }
+  // A folder that has never produced a file — picked while the switch was off,
+  // or its preview failed — has no "current" to move on from, so this first
+  // advance IS the first file. Stepping here would skip index 0 and, in order
+  // mode, start the rotation one name in.
+  const idx = rot.lastRotate === null
+    ? Math.min(Math.max(rot.current, 0), names.length - 1)
+    : pickRotationIndex(names.length, rot.current, rot.mode)
+  const name = names[idx]
+  if (name === undefined) return { ok: false }
+  // Two directories, two independent lanes: the right pane steps through its
+  // OWN folder, counted by its own cursor, so left-lane progress cannot drag
+  // the right lane's place in a different listing along. `current` stays the
+  // left cursor; the right one is derived from the name the right lane is
+  // showing, which is what `laneItems[1]` already records.
+  let rightName: string | undefined
+  let rightCount = rot.folderRightCount
+  if (dualFolders) {
+    let rightNames: string[]
+    try {
+      rightNames = await listFolderImages(rot.folderRight!)
+    } catch {
+      return { ok: false }
+    }
+    if (rightNames.length === 0) return { ok: false }
+    rightCount = rightNames.length
+    const rightShown = rot.laneItems[1]
+    const rightPrev = rightShown !== undefined ? rightNames.indexOf(rightShown) : -1
+    const rightIdx = rot.lastRotate === null
+      ? (rightPrev >= 0 ? rightPrev : 0)
+      : pickRotationIndex(rightNames.length, rightPrev, rot.mode)
+    rightName = rightNames[rightIdx]
+    if (rightName === undefined) return { ok: false }
+  } else if (rot.dual) {
+    // Single folder + dual: one listing advanced twice. The helper owns the
+    // "one candidate cannot be a pair" rule, and folder order is name order,
+    // so the second advance lands on the following name.
+    const right = nextLaneIndex(names.length, idx, rot.mode)
+    rightName = right >= 0 ? names[right] : undefined
+  }
+  try {
+    await writeFile(wallpaperPath(), await readFile(join(rot.folder, name)))
+    if (rightName !== undefined) {
+      const rightDir = dualFolders ? rot.folderRight! : rot.folder
+      await writeFile(wallpaperRightPath(), await readFile(join(rightDir, rightName)))
+    }
+  } catch (e) {
+    console.error('dsh-any-background: failed to activate a folder wallpaper', e)
+    return { ok: false }
+  }
+  // The browser half saves slider moves on a 250 ms debounce, so only the
+  // rotation fields may be overwritten, and only onto a config read back after
+  // the file copy.
+  const nextLaneItems = rightName === undefined ? [name] : [name, rightName]
+  // Keep the chosen directories' counts in step with what was just read, so a
+  // directory that grew or shrank since the pick is reported truthfully.
+  const advanced: RotationConfig = {
+    ...rot,
+    current: idx,
+    folderCount: names.length,
+    folderRightCount: rightCount,
+    laneItems: nextLaneItems,
+    lastRotate: now.toISOString(),
+  }
+  const merged: ThemeConfig = { ...(await readConfig()), rotation: advanced }
+  if (!(await writeConfig(merged))) return { ok: false }
+  return { ok: true, rotation: advanced }
 }
 
 /** Drop a partial upload's temp file once its sink is really closed. Windows
@@ -1000,145 +1216,17 @@ function rejectOversizedUpload(req: any, res: any, fail: () => void, limit: stri
   try { req.destroy() } catch { /* already gone */ }
 }
 
-/** Stream the stored video: correct MIME, no caching, Range answers so the
- *  browser can seek (snapshot capture does). */
-async function serveVideo(req: any, res: any): Promise<void> {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    // A POST here means the exact-matched upload route is missing from this
-    // process (old build): tell the user to restart instead of a bare 405.
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'video route only serves GET/HEAD; uploads need the plugin upload route — restart the web server to load it' }))
-    return
-  }
-  try {
-    const found = await findVideoFile()
-    if (found === null) {
-      res.writeHead(404)
-      res.end('no background video stored')
-      return
-    }
-    const st = await stat(found.path)
-    const mime = found.mime ?? 'application/octet-stream'
-    const baseHeaders = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' }
-    const range = typeof req.headers.range === 'string' ? req.headers.range.trim() : ''
-    const m = /^bytes=(\d*)-(\d*)$/.exec(range)
-    if (m !== null && (m[1] !== '' || m[2] !== '')) {
-      let start: number
-      let end: number
-      if (m[1] === '') {
-        const suffix = parseInt(m[2]!, 10)
-        start = Math.max(0, st.size - suffix)
-        end = st.size - 1
-      } else {
-        start = parseInt(m[1]!, 10)
-        end = m[2] !== '' ? Math.min(parseInt(m[2]!, 10), st.size - 1) : st.size - 1
-      }
-      if (start >= st.size || start > end) {
-        res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
-        res.end()
-        return
-      }
-      res.writeHead(206, { ...baseHeaders, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 })
-      if (req.method === 'HEAD') { res.end(); return }
-      createReadStream(found.path, { start, end }).pipe(res)
-      return
-    }
-    res.writeHead(200, { ...baseHeaders, 'Content-Length': st.size })
-    if (req.method === 'HEAD') { res.end(); return }
-    createReadStream(found.path).pipe(res)
-  } catch (e) {
-    console.error('dsh-any-background: failed to serve the background video', e)
-    try { res.writeHead(500); res.end() } catch { /* response already sent */ }
-  }
-}
-
-/** Accept a raw video upload (POST): pipe the body into a temp file, then
- *  rename it into the MIME-derived slot. Aborted transfers clean up. */
-async function handleVideoUpload(req: any, res: any): Promise<void> {
-  if (req.method !== 'POST') {
-    res.writeHead(405)
-    res.end()
-    return
-  }
-  const contentType = typeof req.headers['content-type'] === 'string' ? req.headers['content-type'] : ''
-  const mime = contentType.split(';')[0]!.trim()
-  if (!mime.startsWith('video/')) {
-    req.resume()
-    res.writeHead(415, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'unsupported media type, expected video/*' }))
-    return
-  }
-  try {
-    await ensureDir()
-    // Own temp file: a concurrent wallpaper upload must not corrupt this one.
-    const tmp = dshHomePath(DATA_DIR, VIDEO_UPLOAD_TMP)
-    const target = videoPathFor(mime)
-    const out = createWriteStream(tmp)
-    let received = 0
-    let failed = false
-    const fail = () => {
-      if (failed) return
-      failed = true
-      out.destroy()
-      rmWhenClosed(out, tmp)
-    }
-    req.on('aborted', fail)
-    req.on('error', fail)
-    req.on('data', (chunk: Buffer) => {
-      // Idempotent: the destroy below needs a moment, and every chunk that
-      // still arrives would otherwise re-send the 413 on a finished response.
-      if (failed) return
-      received += chunk.byteLength
-      if (received > VIDEO_UPLOAD_MAX) rejectOversizedUpload(req, res, fail, '2 GB')
-    })
-    out.on('error', () => {
-      fail()
-      try { res.writeHead(500); res.end() } catch { /* response already sent */ }
-    })
-    req.pipe(out)
-    out.on('finish', async () => {
-      if (failed) return
-      try {
-        // One video owns the slot: clear every other variant, then promote.
-        for (const name of VIDEO_CANDIDATES) {
-          const p = dshHomePath(DATA_DIR, name)
-          if (p !== target) await rm(p, { force: true })
-        }
-        // Windows rename refuses to overwrite (EEXIST): drop the old one first.
-        await rm(target, { force: true })
-        await rename(tmp, target)
-        // Record the MIME server-side right away (mirrors writeVideoFromUrl), so
-        // a reload between this response and the client's next config write
-        // still resolves the correct file instead of renaming it by the old MIME.
-        const cfg = await readConfig()
-        if (cfg.videoMime !== mime) {
-          cfg.videoMime = mime
-          await writeConfig(cfg)
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      } catch (e) {
-        console.error('dsh-any-background: failed to finalize the uploaded video', e)
-        void rm(tmp, { force: true })
-        try { res.writeHead(500); res.end() } catch { /* response already sent */ }
-      }
-    })
-  } catch (e) {
-    console.error('dsh-any-background: failed to accept the video upload', e)
-    try { res.writeHead(500); res.end() } catch { /* response already sent */ }
-  }
-}
-
-/** Stream the stored wallpaper: sniffed MIME, no caching (uploads and rotation
- *  replace the file in place). */
-async function serveWallpaper(req: any, res: any): Promise<void> {
+/** Stream a stored wallpaper slot: sniffed MIME, no caching (uploads and
+ *  rotation replace the file in place). Shared by both panes — the left slot
+ *  and dual mode's right slot are the same kind of artifact. */
+async function serveWallpaperFile(req: any, res: any, file: string): Promise<void> {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: false, error: 'wallpaper route only serves GET/HEAD' }))
     return
   }
   try {
-    const st = await stat(wallpaperPath())
+    const st = await stat(file)
     if (st.size === 0) {
       res.writeHead(404)
       res.end()
@@ -1148,7 +1236,7 @@ async function serveWallpaper(req: any, res: any): Promise<void> {
     // sniffing never pulls a multi-MB wallpaper into memory.
     const head = await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = []
-      const s = createReadStream(wallpaperPath(), { start: 0, end: 15 })
+      const s = createReadStream(file, { start: 0, end: 15 })
       s.on('data', (c: Buffer) => chunks.push(c))
       s.on('end', () => resolve(Buffer.concat(chunks)))
       s.on('error', reject)
@@ -1156,12 +1244,15 @@ async function serveWallpaper(req: any, res: any): Promise<void> {
     const mime = sniffImageMime(head)
     res.writeHead(200, { 'Content-Type': mime, 'Content-Length': st.size, 'Cache-Control': 'no-store' })
     if (req.method === 'HEAD') { res.end(); return }
-    createReadStream(wallpaperPath()).pipe(res)
+    createReadStream(file).pipe(res)
   } catch {
     res.writeHead(404)
     res.end('no wallpaper stored')
   }
 }
+
+const serveWallpaper = (req: any, res: any): Promise<void> => serveWallpaperFile(req, res, wallpaperPath())
+const serveWallpaperRight = (req: any, res: any): Promise<void> => serveWallpaperFile(req, res, wallpaperRightPath())
 
 /** Accept a raw wallpaper upload (POST): pipe the body straight into the
  *  wallpaper slot — no base64 inflation, original pixels preserved. */
@@ -1198,7 +1289,8 @@ async function handleWallpaperUpload(req: any, res: any): Promise<void> {
       try { res.writeHead(500); res.end() } catch { /* response already sent */ }
     })
     req.on('data', (chunk: Buffer) => {
-      // Idempotent (see the video upload above).
+      // Idempotent: the destroy below needs a moment, and every chunk that
+      // still arrives would otherwise re-send the 413 on a finished response.
       if (failed) return
       received += chunk.byteLength
       if (received > WALLPAPER_UPLOAD_MAX) rejectOversizedUpload(req, res, fail, '100 MB')
@@ -1284,7 +1376,8 @@ async function handleFontUpload(req: any, res: any): Promise<void> {
       try { res.writeHead(500); res.end() } catch { /* response already sent */ }
     })
     req.on('data', (chunk: Buffer) => {
-      // Idempotent (see the video upload above).
+      // Idempotent: the destroy below needs a moment, and every chunk that
+      // still arrives would otherwise re-send the 413 on a finished response.
       if (failed) return
       received += chunk.byteLength
       if (received > FONT_UPLOAD_MAX) rejectOversizedUpload(req, res, fail, '100 MB')
@@ -1324,9 +1417,9 @@ async function handleFontUpload(req: any, res: any): Promise<void> {
         // Windows rename refuses to overwrite (EEXIST): drop the old one first.
         await rm(target, { force: true })
         await rename(tmp, target)
-        // Record the MIME server-side right away (mirrors the video slot), so a
-        // reload between this response and the client's next config write still
-        // resolves the correct file.
+        // Record the MIME server-side right away, so a reload between this
+        // response and the client's next config write still resolves the
+        // correct file.
         const cfg = await readConfig()
         if (cfg.fontMime !== mime) {
           cfg.fontMime = mime
@@ -1378,6 +1471,26 @@ function isoWeekKey(d: Date): string {
   return `${t.getUTCFullYear()}-W${week}`
 }
 
+/** Wall-clock gap of a `minutes` rotation, in ms. Guarded rather than trusted:
+ *  a config edited by hand (or written by an older half) can carry anything,
+ *  and the value feeds a timer the client re-arms on. */
+export function rotationGapMs(rot: Pick<RotationConfig, 'intervalMinutes'>): number {
+  return clamp(rot.intervalMinutes, INTERVAL_MINUTES_MIN, INTERVAL_MINUTES_MAX, DEFAULT_CONFIG.rotation.intervalMinutes) * 60_000
+}
+
+/** Whether a rotation is due at `now`: `reload` always is, a missing/unparsable
+ *  stamp is treated as never rotated, `minutes` compares a wall-clock gap, and
+ *  the dated cadences compare calendar day / ISO week. */
+export function rotationIsDue(rot: Pick<RotationConfig, 'interval' | 'intervalMinutes' | 'lastRotate'>, now: Date): boolean {
+  if (rot.interval === 'reload') return true
+  const last = rot.lastRotate !== null ? new Date(rot.lastRotate) : null
+  if (last === null || isNaN(last.getTime())) return true
+  if (rot.interval === 'minutes') return now.getTime() - last.getTime() >= rotationGapMs(rot)
+  return rot.interval === 'daily'
+    ? last.toDateString() !== now.toDateString()
+    : isoWeekKey(last) !== isoWeekKey(now)
+}
+
 /** Advance the rotation pool when its cadence is due: pick the next item,
  *  copy it over the active wallpaper slot, and persist the rotation state.
  *  Runs inside `read` so a reload restores the NEW wallpaper directly — the
@@ -1386,27 +1499,27 @@ function isoWeekKey(d: Date): string {
 async function advanceRotationIfDue(): Promise<boolean> {
   const cfg = await readConfig()
   const rot = cfg.rotation
+  // Folder mode reads its candidates live from the picked directory instead of
+  // from the pool, so it owns its own copy step. Only the pool path needs a
+  // non-empty item list: a folder can hold pictures the config never listed.
+  if (rot.source === 'folder' || rot.source === 'folders') return (await advanceFolderRotation(false)).ok
   if (!rot.enabled || rot.items.length === 0) return false
   const now = new Date()
-  const last = rot.lastRotate !== null ? new Date(rot.lastRotate) : null
-  const due = rot.interval === 'reload'
-    || last === null || isNaN(last.getTime())
-    || (rot.interval === 'daily'
-      ? last.toDateString() !== now.toDateString()
-      : isoWeekKey(last) !== isoWeekKey(now))
-  if (!due) return false
-  const n = rot.items.length
-  let idx = rot.current
-  if (rot.mode === 'shuffle' && n > 1) {
-    while (idx === rot.current) idx = Math.floor(Math.random() * n)
-  } else {
-    idx = (rot.current + 1) % n
-  }
-  const item = rot.items[idx]
+  if (!rotationIsDue(rot, now)) return false
+  // A dual step paints BOTH panes from one draw: two different pictures, two
+  // indexes, one `lastRotate`. The pair is picked together so shuffle cannot
+  // land the same picture in both panes.
+  const pair = pickRotationPair(rot.items.length, rot.current, rot.mode, rot.dual)
+  const item = rot.items[pair.left]
   if (item === undefined) return false
   try {
-    const buf = await readFile(dshHomePath(DATA_DIR, ROTATION_DIR, item.file))
-    await writeFile(wallpaperPath(), buf)
+    await writeFile(wallpaperPath(), await readFile(dshHomePath(DATA_DIR, ROTATION_DIR, item.file)))
+    if (pair.right >= 0) {
+      const second = rot.items[pair.right]
+      if (second !== undefined) {
+        await writeFile(wallpaperRightPath(), await readFile(dshHomePath(DATA_DIR, ROTATION_DIR, second.file)))
+      }
+    }
   } catch (e) {
     console.error('dsh-any-background: failed to advance the rotation pool', e)
     return false
@@ -1421,7 +1534,7 @@ async function advanceRotationIfDue(): Promise<boolean> {
   // the write below fails.
   const merged: ThemeConfig = {
     ...(await readConfig()),
-    rotation: { ...rot, current: idx, lastRotate: now.toISOString() },
+    rotation: { ...rot, current: pair.left, laneItems: laneNames(rot.items, pair), lastRotate: now.toISOString() },
   }
   // A failed write means lastRotate/current never land on disk — report "not
   // advanced" so the client-side fallback performs (and persists) the switch.
@@ -1435,6 +1548,7 @@ async function handleRpcMethod(
   endpoint: string,
   payload: unknown,
   hostInfo: Promise<HostInfo>,
+  ctx: any,
 ): Promise<{ ok: boolean; value?: unknown; error?: { code: string; message: string; details: object } }> {
   const method = endpoint.slice(`${NS}/`.length)
   try {
@@ -1443,7 +1557,7 @@ async function handleRpcMethod(
         // Advance a due rotation BEFORE reading the wallpaper slot, so the
         // restore on (re)load paints the new picture from the first apply.
         const rotated = await advanceRotationIfDue()
-        // Image, video and font all travel as serve URLs, never as bytes.
+        // Wallpaper and font both travel as serve URLs, never as bytes.
         const config = await readConfig()
         // First run: no theme-config.json has ever been written. Materialize
         // the defaults on disk right away instead of leaving the install in a
@@ -1454,24 +1568,51 @@ async function handleRpcMethod(
         // `host` is the front door's verdict; the client picks a per-version
         // adapter from it and lets the DOM arbitrate when the release is
         // undetermined. See `host-compat/`.
-        return { ok: true, value: { config, wallpaperUrl: await wallpaperServeUrl(), videoUrl: await videoUrl(), fontUrl: await fontUrl(), rotated, firstRun, host: await hostInfo } }
+        return { ok: true, value: { config, wallpaperUrl: await wallpaperServeUrl(), wallpaperRightUrl: await wallpaperRightServeUrl(), fontUrl: await fontUrl(), rotated, firstRun, folderPicker: directoryPickerCapability(ctx)?.kind === 'native', host: await hostInfo } }
       }
       case 'writeConfig':
         return { ok: true, value: await writeConfig((payload as { config?: unknown } | null)?.config as ThemeConfig ?? {}) }
       case 'setWallpaper':
         return { ok: true, value: await writeWallpaper(((payload as { dataUrl?: unknown } | null)?.dataUrl ?? null) as string | null) }
-      case 'setVideo':
-        return { ok: true, value: await writeVideo(((payload as { dataUrl?: unknown } | null)?.dataUrl ?? null) as string | null) }
       case 'setWallpaperUrl':
         return { ok: true, value: await writeWallpaperFromUrl(((payload as { url?: unknown } | null)?.url ?? null) as string | null) }
-      case 'setVideoUrl':
-        return { ok: true, value: await writeVideoFromUrl(((payload as { url?: unknown } | null)?.url ?? null) as string | null) }
-      case 'rotationAdd':
+      case 'rotationAdd': {
+        // Some builds still run the older browser half, which knows nothing of
+        // `source` — adding to the pool must put the pool back in charge. Both
+        // folder paths go with it: a stale right directory left behind would
+        // split the pool wall into two panes nobody asked for.
+        if (payload !== null && typeof payload === 'object' && (payload as { source?: unknown }).source !== 'folder') {
+          const cfg = await readConfig()
+          if (cfg.rotation.source !== 'pool') await writeConfig({ ...cfg, rotation: { ...cfg.rotation, source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0 } })
+        }
         return { ok: true, value: await handleRotationAdd(payload) }
+      }
       case 'rotationRemove':
         return { ok: true, value: await handleRotationRemove(payload) }
       case 'rotationSet':
         return { ok: true, value: await handleRotationSet(payload) }
+      case 'rotationSetFolder':
+        // `lane` picks which side of a dual wall is being chosen; the older
+        // browser half sends no payload at all, which is the left lane.
+        return { ok: true, value: await handleRotationPickFolder(ctx, (payload as { lane?: unknown } | null)?.lane === 'right' ? 'right' : 'left') }
+      case 'rotationClearFolder': {
+        // Clearing drops the RIGHT directory too: the two lanes are one source,
+        // and leaving half a pair behind would keep the wall split after the
+        // operator asked for it to stop being one. `dual` itself survives — it
+        // is the shape of the wall, not part of the folder source, so the pool
+        // can still use it.
+        const cfg = await readConfig()
+        const ok = await writeConfig({ ...cfg, rotation: { ...cfg.rotation, source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0, current: 0, laneItems: [], lastRotate: null } })
+        return { ok: true, value: ok ? { ok: true } : { ok: false, error: 'config write failed' } }
+      }
+      case 'rotationAdvance':
+        // The caller mirrors the rotation in memory and saves it on a debounce;
+        // handing back the index it just landed on keeps that save from writing
+        // the stale one over it (order mode would otherwise stick on one image).
+        // The pool path (pool as the source) runs the due check and answers with
+        // `wallpaperRightUrl`, so the browser half learns whether the wall is a
+        // pair without a second round trip.
+        return { ok: true, value: await advanceForCaller() }
       case 'removeFont':
         return { ok: true, value: await removeFontFile() }
       default:
@@ -1518,8 +1659,8 @@ export function apply(ctx: any): void {
             res.end(JSON.stringify({ ok: false, error: { code: 'dsh-any-background/bad-request', message: 'expected POST', details: {} } }))
             return
           }
-          // Byte-carrying payloads (video / wallpaper / font uploads) stream to
-          // disk over their own HTTP routes; this channel carries JSON only.
+          // Byte-carrying payloads (wallpaper / font uploads) stream to disk over
+          // their own HTTP routes; this channel carries JSON only.
           // Reject an oversized declared length BEFORE buffering it into memory:
           // the in-loop cap below still guards a lying or chunked sender.
           const declaredLen = Number(req.headers['content-length'] ?? '')
@@ -1566,7 +1707,7 @@ export function apply(ctx: any): void {
             res.end(JSON.stringify({ type: 'server-response', rpcId: env.rpcId, result: { ok: false, error: { code: 'dsh-any-background/bad-request', message: `method ${env.method} does not match endpoint ${endpoint}`, details: { issues: [] } } } }))
             return
           }
-          const result = await handleRpcMethod(endpoint, env.payload, hostInfo)
+          const result = await handleRpcMethod(endpoint, env.payload, hostInfo, webCtx)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ type: 'server-response', rpcId: env.rpcId, result }))
         },
@@ -1574,9 +1715,9 @@ export function apply(ctx: any): void {
       'dsh-any-background: rpc channel',
     )
     // Longest prefix wins over the RPC channel's shorter one; exact beats
-    // prefix, so uploads land in the upload handler even though UPLOAD_ROUTE
-    // sits inside VIDEO_ROUTE. Effects auto-dispose with the injected scope.
-    // The GET/HEAD serve routes stay open (the browser's <img>/<video> fetches
+    // prefix, so uploads land in the upload handler even though an upload route
+    // sits inside its serve prefix. Effects auto-dispose with the injected
+    // scope. The GET/HEAD serve routes stay open (the browser's <img> fetches
     // carry no auth headers); the POST upload routes get the same Host/Origin
     // fence as the RPC channel so a stray cross-origin page cannot write files.
     const fenceUpload = (handler: (req: any, res: any) => Promise<void>) => (req: any, res: any): void => {
@@ -1589,16 +1730,12 @@ export function apply(ctx: any): void {
       void handler(req, res)
     }
     webCtx.effect(
-      () => webCtx.webServer.register({ kind: 'prefix', path: VIDEO_ROUTE, handler: serveVideo }),
-      'dsh-any-background: video route',
-    )
-    webCtx.effect(
-      () => webCtx.webServer.register({ kind: 'exact', path: UPLOAD_ROUTE, handler: fenceUpload(handleVideoUpload) }),
-      'dsh-any-background: upload route',
-    )
-    webCtx.effect(
       () => webCtx.webServer.register({ kind: 'prefix', path: WALLPAPER_ROUTE, handler: serveWallpaper }),
       'dsh-any-background: wallpaper route',
+    )
+    webCtx.effect(
+      () => webCtx.webServer.register({ kind: 'prefix', path: WALLPAPER_RIGHT_ROUTE, handler: serveWallpaperRight }),
+      'dsh-any-background: wallpaper right route',
     )
     webCtx.effect(
       () => webCtx.webServer.register({ kind: 'exact', path: WALLPAPER_UPLOAD_ROUTE, handler: fenceUpload(handleWallpaperUpload) }),

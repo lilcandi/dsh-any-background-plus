@@ -85,6 +85,10 @@ export const UI_CSS = `
 .dab-num:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 18%,transparent)}
 .dab-num::-webkit-outer-spin-button,.dab-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .dab-num{-moz-appearance:textfield;appearance:textfield}
+.dab-range{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:var(--dsw-alias-border-l2);outline:none;cursor:pointer}
+.dab-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--dsw-alias-brand-primary);cursor:pointer}
+.dab-range::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:var(--dsw-alias-brand-primary);cursor:pointer}
+.dab-range:disabled{opacity:.5;cursor:default}
 .dab-urlinput{flex:1;min-width:180px;height:34px;padding:0 12px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12.5px;outline:none;transition:border-color .2s}
 .dab-urlinput::placeholder{color:var(--dsw-alias-label-quaternary)}
 .dab-urlinput:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 18%,transparent)}
@@ -171,7 +175,10 @@ export const UI_CSS = `
 
 /* ── background preview hero ─────────────────────────────────────────────── */
 .dab-hero{position:relative;border-radius:16px;overflow:hidden;aspect-ratio:16/9;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2)}
+.dab-hero-split{position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr}
+.dab-hero-split.is-single{grid-template-columns:1fr}
 .dab-hero-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .5s cubic-bezier(.22,1,.36,1)}
+.dab-hero-split .dab-hero-img{position:relative;inset:auto;min-width:0}
 .dab-hero:hover .dab-hero-img{transform:scale(1.03)}
 .dab-hero-empty{position:absolute;inset:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--dsw-alias-label-tertiary);font-size:12.5px;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:12px;cursor:pointer;background:transparent;transition:border-color .25s,color .25s,background .25s;width:auto;height:auto}
 .dab-hero-empty:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
@@ -257,6 +264,8 @@ export const UI_CSS = `
 .dab-thumb-add{border-style:dashed;cursor:pointer;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;transition:border-color .22s ease,color .22s ease}
 .dab-thumb-add:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
 .dab-chip-sep{width:1px;height:18px;background:var(--dsw-alias-border-l2);margin:0 4px;flex:none}
+.dab-folder{width:100%;padding:10px 12px;border-radius:9px;border:1px dashed var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
+.dab-folder-path{font-size:12px;word-break:break-all;color:var(--dsw-alias-label-primary)}
 
 /* ── toast ───────────────────────────────────────────────────────────────── */
 .dab-toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:99px;background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-layer-2));border:1px solid var(--dsw-alias-border-l2);box-shadow:0 10px 30px -8px rgba(0,0,0,.38);font-size:12.5px;z-index:10001;animation:dab-toast-in .32s cubic-bezier(.22,1,.36,1) both}

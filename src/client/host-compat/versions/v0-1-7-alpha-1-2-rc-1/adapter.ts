@@ -1,6 +1,6 @@
 /**
  * Adapter for the DSH 0.1.7-alpha channel (`0.1.7-alpha.1`, `0.1.7-alpha.2`),
- * re-verified unchanged at `0.1.7-rc.1`.
+ * re-verified unchanged at `0.1.7-rc.1` and again at `0.1.7-rc.2`.
  *
  * This is the line the panel mechanics actually changed on — verified against
  * `dsh-v0.1.6-alpha.2` → `dsh-v0.1.7-alpha.1`, where `SidebarRight.module.css`
@@ -45,6 +45,15 @@
  *      pane with no tabs renders the empty host instead, and keying on `host`
  *      alone mis-detects that (transient) shape.
  *
+ * `0.1.7-rc.2` was checked by reading the installed packages rather than a tag
+ * diff: `ui-sidebar-right`'s inlined `SidebarRight.module.css` still emits the
+ * four declarations this folder's `panelFragments` reasons about, `ui-dockkit`
+ * still stamps `[data-dockkit-host]`/`[data-dockkit-empty]`, `ui-plugin-manager`
+ * still renders `section[data-plugin-panel]` with `div.groupHead` + `ul.cards`,
+ * and all five `conversation.session.header*` slot keys are still registered.
+ * The one renamed thing is the wrapper class, which was already hashed and is
+ * never matched by this plugin.
+ *
  * Also true of this line, recorded so the next reader does not re-derive it:
  *   · `conversation.session.header.leading` was DELETED here with no shim, so this
  *     folder deliberately does not list it (see the 0.1.6 folder).
@@ -84,7 +93,7 @@ function panelFragments(): PanelFragments {
 
 export function createAdapter(host: HostInfo): HostAdapter {
   return {
-    id: '0.1.7-alpha.1/alpha.2/rc.1',
+    id: '0.1.7-alpha.1/alpha.2/rc.1/rc.2',
     channel: '0.1.7-alpha',
     host,
     panelFragments,

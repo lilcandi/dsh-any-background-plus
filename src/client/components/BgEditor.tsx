@@ -2,10 +2,6 @@ import { useRef, useState, useEffect, useCallback } from 'react'
 import { cfg } from '../state'
 import { Portal } from './Portal'
 
-/** Placement slot for the active background type: video framing lives in its
- *  own state so image and video edits never overwrite each other. */
-const activeState = () => cfg.backgroundType === 'video' ? cfg.videoBgState : cfg.bgState
-
 /** Zoom is shared by every input path (wheel + pinch) so all pictures animate
  *  between the same bounds. */
 const clampZoom = (z: number): number => Math.max(0.1, Math.min(10, z))
@@ -16,7 +12,7 @@ export function BgEditor({ url, t, onClose, onCommit }: {
 }) {
   const pw = Math.min(window.innerWidth * 0.75, 860)
   const ph = Math.round(pw * window.innerHeight / window.innerWidth)
-  const saved = activeState()
+  const saved = cfg.bgState
   const [zoom, setZoom] = useState(saved.iw > 0 ? saved.zoom : 1)
   const [pos, setPos] = useState(saved.iw > 0 ? { x: saved.x * pw, y: saved.y * ph } : { x: 0, y: 0 })
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
@@ -63,7 +59,7 @@ export function BgEditor({ url, t, onClose, onCommit }: {
       const scale = Math.min(pw / img.width, ph / img.height)
       const w = img.width * scale, h = img.height * scale
       setImgSize({ w, h })
-      const s = activeState()
+      const s = cfg.bgState
       if (s.iw > 0 && s.iw === img.width && s.ih === img.height) {
         setZoom(s.zoom)
         // Saved x, y are CENTER fractions of the preview: the image center

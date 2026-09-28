@@ -1,16 +1,14 @@
-import type { RpcResultLike, UploadOutcome } from './types'
-import { cfg, adoptConfig, setWpUrl, setWpImageUrl, setWpVideoUrl, rWpImage } from './state'
+import type { RotationConfig, RpcResultLike, UploadOutcome } from './types'
+import { cfg, adoptConfig, normalizeRotation, setWpUrl, setWpImageUrl, setWpImageRightUrl, rWpImage } from './state'
 import { adoptHostInfo } from './host-compat/release'
 
 export const RPC_CHANNEL = '/dsh-any-background'
-/** Same-origin serve URL of the persisted video (enough for <video src>/fetch). */
-export const VIDEO_SERVE_URL = '/dsh-any-background/video'
 /** Same-origin serve URL of the persisted wallpaper (native <img> loading). */
 export const WALLPAPER_SERVE_URL = '/dsh-any-background/wallpaper'
+/** Same-origin serve URL of dual mode's right pane (a second wallpaper slot). */
+export const WALLPAPER_RIGHT_SERVE_URL = '/dsh-any-background/wallpaper-right'
 /** Raw-bytes upload endpoint for the wallpaper slot (no base64 inflation). */
 const WALLPAPER_UPLOAD_URL = '/dsh-any-background/wallpaper/upload'
-/** HTTP route new videos are POSTed to as raw bytes (see uploadVideo). */
-export const VIDEO_UPLOAD_URL = '/dsh-any-background/video/upload'
 /** Same-origin serve URL of the persisted custom font (enough for @font-face). */
 export const FONT_SERVE_URL = '/dsh-any-background/font'
 /** HTTP route custom fonts are POSTed to as raw bytes (see uploadFont). */
@@ -22,6 +20,11 @@ let rpcCallFn: ((endpoint: string, payload: unknown) => Promise<RpcResultLike | 
 
 /** Serve URL of the persisted custom font, filled by loadPersisted. */
 export let fontServeUrl: string | null = null
+
+/** Whether the host offers an OS folder chooser, filled by loadPersisted. The
+ *  picker UI stays hidden until this is known-true (an unknown picker kind is
+ *  the documented "hide the entry" case, not an error). */
+export let folderPickerAvailable = false
 
 export function initRpc(call: (endpoint: string, payload: unknown) => Promise<RpcResultLike | undefined>): void {
   rpcCallFn = call
@@ -66,50 +69,46 @@ export function persistConfig(): void {
   void rpcCall('writeConfig', { config: cfg })
 }
 
-/** Load the persisted theme (config + wallpaper URL + video URL) from the node
- *  half. Image and video both travel as serve URLs — never bytes — so this RPC
- *  stays tiny. Resolves true when the server advanced a due wallpaper rotation
- *  during the read — the restored wallpaper is then already the new pick.
+/** Load the persisted theme (config + wallpaper URL) from the node half. The
+ *  wallpaper travels as a serve URL — never bytes — so this RPC stays tiny.
+ *  Resolves true when the server advanced a due wallpaper rotation during the
+ *  read — the restored wallpaper is then already the new pick.
  *  `firstRun` means the server had no theme-config.json and just materialized
  *  its defaults: the caller should persist the browser side's own defaults and
- *  re-read once so every slider starts from a value that is really on disk. */
-export async function loadPersisted(): Promise<{ rotated: boolean; firstRun: boolean }> {
+ *  re-read once so every slider starts from a value that is really on disk.
+ *  `folderPicker` reports whether the host can open an OS folder chooser. */
+export async function loadPersisted(): Promise<{ rotated: boolean; firstRun: boolean; folderPicker: boolean }> {
   const data = await rpcCall('read', {})
   if (data && typeof data === 'object') {
-    const d = data as { config?: unknown; wallpaperUrl?: unknown; videoUrl?: unknown; fontUrl?: unknown; rotated?: unknown; firstRun?: unknown; host?: unknown }
+    const d = data as { config?: unknown; wallpaperUrl?: unknown; wallpaperRightUrl?: unknown; fontUrl?: unknown; rotated?: unknown; firstRun?: unknown; folderPicker?: unknown; host?: unknown }
     // Host release verdict first: feature gates read it before any appearance
     // work runs, and it is the only source of the real version string.
     adoptHostInfo(d.host)
     if (d.config) adoptConfig(d.config)
-    // Uploaded image and video keep their own slots so type switches never
-    // discard them; in image mode the caller points wpUrl at it.
+    // The uploaded image keeps its own slot so type switches never discard it;
+    // in image mode the caller points wpUrl at it.
     if (typeof d.wallpaperUrl === 'string') setWpImageUrl(d.wallpaperUrl)
     else if (d.wallpaperUrl === null) setWpImageUrl(null)
-    // The video travels as a serve URL; the frame snapshot is re-captured by
-    // the boot restore in index.tsx when needed.
-    if (typeof d.videoUrl === 'string') setWpVideoUrl(d.videoUrl, cfg.videoMime)
-    else if (d.videoUrl === null) setWpVideoUrl(null, null)
+    // Dual mode's right pane lives in its own slot; null means the host has no
+    // right pane on disk, so the lane is dropped rather than left stale.
+    if (typeof d.wallpaperRightUrl === 'string') setWpImageRightUrl(d.wallpaperRightUrl)
+    else if (d.wallpaperRightUrl === null) setWpImageRightUrl(null)
     // The custom font travels as a serve URL too; the caller applies the
     // @font-face from it (config.fontEnabled decides whether it is active).
     if (typeof d.fontUrl === 'string') fontServeUrl = d.fontUrl
     else if (d.fontUrl === null) fontServeUrl = null
     // Mirror the same rev'd URL setWpImageUrl stored, so wpUrl never diverges.
     if (cfg.backgroundType === 'image') setWpUrl(rWpImage())
-    return { rotated: d.rotated === true, firstRun: d.firstRun === true }
+    folderPickerAvailable = d.folderPicker === true
+    return { rotated: d.rotated === true, firstRun: d.firstRun === true, folderPicker: folderPickerAvailable }
   }
-  return { rotated: false, firstRun: false }
+  folderPickerAvailable = false
+  return { rotated: false, firstRun: false, folderPicker: false }
 }
 
 /** Persist a wallpaper (null removes it); one-shot, no debounce. */
 export function persistWallpaper(dataUrl: string | null): void {
   void rpcCall('setWallpaper', { dataUrl })
-}
-
-/** Persist a background video (null removes it); resolves true once on disk,
- *  so callers only switch playback to the serve URL after acceptance. */
-export async function persistVideo(dataUrl: string | null): Promise<boolean> {
-  const res = await rpcCall('setVideo', { dataUrl })
-  return res === true
 }
 
 /** Download a wallpaper from a network URL and persist it into the local slot
@@ -131,27 +130,6 @@ export async function setWallpaperFromUrl(url: string): Promise<{ ok: boolean; w
   const v = res.value as { ok?: boolean; wallpaperUrl?: string | null; error?: string }
   return v?.ok === true
     ? { ok: true, wallpaperUrl: v.wallpaperUrl ?? null }
-    : { ok: false, error: v?.error ?? 'failed' }
-}
-
-/** Download a background video from a network URL. The server streams it into
- *  the video slot and returns the resolved MIME for playback via the serve URL. */
-export async function setVideoFromUrl(url: string): Promise<{ ok: boolean; mime?: string; error?: string }> {
-  if (!rpcCallFn) return { ok: false, error: 'rpc not ready' }
-  let res: RpcResultLike | undefined
-  try {
-    res = await rpcCallFn(rpcEndpoint('setVideoUrl'), { url })
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
-  if (!res) return { ok: false, error: 'no response' }
-  if (res.ok !== true) {
-    const err = (res as { error?: { message?: string } }).error
-    return { ok: false, error: err?.message ?? 'request failed' }
-  }
-  const v = res.value as { ok?: boolean; mime?: string; error?: string }
-  return v?.ok === true
-    ? { ok: true, mime: v.mime ?? 'video/mp4' }
     : { ok: false, error: v?.error ?? 'failed' }
 }
 
@@ -187,24 +165,9 @@ export function uploadRefusalText(o: UploadOutcome, t: (key: string) => string, 
   return t(fallbackKey)
 }
 
-/** Upload a video's raw bytes over HTTP (MIME in Content-Type, body untouched
- *  — no base64 inflation that would blow the RPC body limit on large clips). */
-export async function uploadVideo(blob: Blob, mime: string): Promise<UploadOutcome> {
-  try {
-    const res = await fetch(VIDEO_UPLOAD_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': mime || 'application/octet-stream' },
-      body: blob,
-    })
-    return res.ok ? { ok: true } : await refusedUpload(res)
-  } catch (e) {
-    console.warn('dsh-any-background: video upload failed', e)
-    return { ok: false }
-  }
-}
-
-/** Upload a wallpaper's raw bytes over HTTP — same streaming model as videos,
- *  original pixels preserved, zero base64 round-trips. */
+/** Upload a wallpaper's raw bytes over HTTP — MIME in Content-Type, body
+ *  untouched, no base64 inflation that would blow the RPC body limit on large
+ *  files. Original pixels preserved, zero base64 round-trips. */
 export async function uploadWallpaper(blob: Blob): Promise<UploadOutcome> {
   try {
     const res = await fetch(WALLPAPER_UPLOAD_URL, {
@@ -274,14 +237,69 @@ export async function rotationRemove(index: number): Promise<{ ok: boolean; item
 }
 
 /** Activate a rotation item: the server copies its bytes into the wallpaper
- *  slot and returns the serve URL for immediate display. */
-export async function rotationActivate(index: number): Promise<{ ok: boolean; wallpaperUrl?: string; error?: string }> {
+ *  slot (both panes, in dual mode) and returns the serve URL for immediate
+ *  display. */
+export async function rotationActivate(index: number): Promise<{ ok: boolean; wallpaperUrl?: string; wallpaperRightUrl?: string; error?: string }> {
   if (!rpcCallFn) return { ok: false, error: 'rpc not ready' }
   try {
     const res = await rpcCallFn(rpcEndpoint('rotationSet'), { index })
-    if (res && res.ok === true) return (res.value ?? { ok: false, error: 'no value' }) as { ok: boolean; wallpaperUrl?: string; error?: string }
+    if (res && res.ok === true) return (res.value ?? { ok: false, error: 'no value' }) as { ok: boolean; wallpaperUrl?: string; wallpaperRightUrl?: string; error?: string }
     return { ok: false, error: (res as { error?: { message?: string } })?.error?.message ?? 'request failed' }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ── Folder-backed rotation RPCs ──────────────────────────────────────────────
+
+export interface FolderPickResult {
+  ok: boolean
+  folder?: string
+  count?: number
+  /** The server already previewed the first image into the wallpaper slot, so
+   *  the caller should re-read the slot instead of waiting for a rotation. */
+  previewed?: boolean
+  /** The rotation the server persisted; mirror it rather than re-saving. */
+  rotation?: RotationConfig
+  error?: string
+}
+
+/** Ask the host to open its native folder chooser; `rotationSetFolder` adopts
+ *  the answer server-side, so the path never comes from the browser. `lane`
+ *  says which side of a dual wall the pick belongs to: the right lane's pick is
+ *  refused server-side unless a left folder already exists. */
+export async function pickRotationFolder(lane: 'left' | 'right' = 'left'): Promise<FolderPickResult> {
+  if (!rpcCallFn) return { ok: false, error: 'rpc not ready' }
+  try {
+    const res = await rpcCallFn(rpcEndpoint('rotationSetFolder'), { lane })
+    if (res && res.ok === true) {
+      const v = ((res.value ?? { ok: false, error: 'no value' }) as FolderPickResult)
+      return { ...v, rotation: v.rotation === undefined ? undefined : normalizeRotation(v.rotation) }
+    }
+    return { ok: false, error: (res as { error?: { message?: string } })?.error?.message ?? 'request failed' }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Forget the picked folder and return to the built-in pool. */
+export async function clearRotationFolder(): Promise<boolean> {
+  const res = await rpcCall('rotationClearFolder', {})
+  return (res as { ok?: unknown } | undefined)?.ok === true
+}
+
+/** Immediately advance a folder-mode rotation (no-op while the pool is the
+ *  source). The rotation it landed on comes back so the caller's in-memory
+ *  mirror cannot save its stale index back over the advance; the right lane's
+ *  serve URL comes back too, because only the node half knows whether this
+ *  advance filled a second lane. */
+export async function advanceRotation(): Promise<{ ok: boolean; rotation?: RotationConfig; wallpaperRightUrl?: string | null }> {
+  const res = await rpcCall('rotationAdvance', {})
+  if (res === null || typeof res !== 'object') return { ok: false }
+  const r = res as { ok?: unknown; rotation?: unknown; wallpaperRightUrl?: unknown }
+  return {
+    ok: r.ok === true,
+    rotation: r.rotation === undefined ? undefined : normalizeRotation(r.rotation),
+    wallpaperRightUrl: typeof r.wallpaperRightUrl === 'string' ? r.wallpaperRightUrl : null,
   }
 }

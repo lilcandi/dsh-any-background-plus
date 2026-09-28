@@ -40,6 +40,14 @@ export const SUPPORTED_RELEASES: readonly SupportedRelease[] = [
   { channel: '0.1.6-alpha', release: '0.1.6-alpha.2' },
   { channel: '0.1.7-alpha', release: '0.1.7-alpha.2' },
   { channel: '0.1.7-alpha', release: '0.1.7-rc.1' },
+  // Added after diffing the rc.2 packages on disk: every anchor this plugin
+  // matches still resolves, and `SidebarRight.module.css` keeps the exact shape
+  // recorded in `v0-1-7-alpha-1-2-rc-1/adapter.ts` (`.panel` absolute with
+  // `--dsh-dockkit-dock-layer:10`, the docked children carrying the slide
+  // transform, `[data-sidebar-right-panel=fullscreen]` raising that layer to 40
+  // rather than switching to `position:fixed`). `panelFragments` therefore stays
+  // empty on this row too.
+  { channel: '0.1.7-alpha', release: '0.1.7-rc.2' },
 ]
 
 /** How the chosen adapter relates to the release that was detected. Reported so a

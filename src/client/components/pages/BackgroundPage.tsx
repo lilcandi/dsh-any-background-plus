@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { ThemeSectionProps, ThemeStoreState, BackgroundType, GeneratedBgParams, BgMode } from '../../types'
-import { cfg, rWop, rBl, rBgMode } from '../../state'
+import { cfg, rWop, rBl, rEdgeFade, rBgMode } from '../../state'
+import { INTERVAL_MINUTES_MAX, INTERVAL_MINUTES_MIN } from '../../types'
 import { saveConfig, setWallpaperFromUrl, uploadWallpaper, uploadRefusalText, WALLPAPER_SERVE_URL } from '../../rpc'
-import { applyWp, setWpOpacity, setWpBlur, pauseGeneratedBg, resumeGeneratedBg } from '../../wallpaper'
+import { applyWp, setWpOpacity, setWpBlur, setWpEdgeFade, pauseGeneratedBg, resumeGeneratedBg } from '../../wallpaper'
 import { defaultParamsFor } from '../../utils/bg-generators'
 import { BgEditor } from '../BgEditor'
 import { LiveSlider } from '../LiveSlider'
-import { LockIcon, CheckIcon, PhotoIcon, RefreshIcon, SparkleIcon, TrashIcon, UploadIcon, EditIcon, VideoIcon, LinkIcon, PlusIcon, XIcon, PlayIcon, PauseIcon } from '../icons'
+import { LockIcon, CheckIcon, PhotoIcon, RefreshIcon, SparkleIcon, TrashIcon, UploadIcon, EditIcon, LinkIcon, PlusIcon, XIcon, PlayIcon, PauseIcon } from '../icons'
 
 const SEG_W = 108
 const BG_MODES: Array<{ mode: BgMode; labelKey: string }> = [
@@ -19,12 +20,17 @@ const BG_MODES: Array<{ mode: BgMode; labelKey: string }> = [
 ]
 
 export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (msg: string, ok?: boolean) => void }) {
-  const { t, setWpFromServer, setVideo, setWop, setBl, setBgType, setGeneratedBg, regenerateBg, setRegenerateOnReload, setRotation, addRotationItems, removeRotationItem, rotateNow, setVideoFromUrl, useStore } = p
+  const { t, setWpFromServer, setWop, setBl, setEdgeFade, setBgType, setGeneratedBg, regenerateBg, setRegenerateOnReload, setRotation, addRotationItems, removeRotationItem, rotateNow, canPickFolder, pickRotationFolder, clearRotationFolder, useStore } = p
   // Field-level store subscriptions: dragging sliders / picking colors changes
   // only the color fields, and the background page has no reason to re-render
   // for those — full-state subscription re-renders this whole page (hero img,
   // thumbnails, sliders) on every unrelated store write.
   const storeUrl = useStore((s: ThemeStoreState) => s.url)
+  // Dual mode mirrors in the preview the split the wall shows, so the hero needs
+  // the second lane's URL too. It is the render-time store field rather than
+  // `rWpImageRight()` because the hero is React: reading the module variable
+  // would not re-render on a rotation, and the second lane would stay stale.
+  const storeUrlRight = useStore((s: ThemeStoreState) => s.urlRight)
   const backgroundType = useStore((s: ThemeStoreState) => s.backgroundType)
   const generatedBg = useStore((s: ThemeStoreState) => s.generatedBg)
   const regenerateOnReload = useStore((s: ThemeStoreState) => s.regenerateOnReload)
@@ -50,10 +56,15 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
   const [mode, setModeState] = useState<BgMode>(rBgMode())
   useEffect(() => { setModeState(rBgMode()) }, [bgRev])
 
-  const isVideo = backgroundType === 'video'
-  const isStatic = backgroundType === 'image' || isVideo
+  // Draft text for the custom rotation gap. Seeded from config and re-seeded
+  // whenever the stored value changes from elsewhere (profile import, another
+  // window), but NOT on every keystroke — see the input below.
+  const [gapDraft, setGapDraft] = useState(String(rotation.intervalMinutes))
+  useEffect(() => { setGapDraft(String(rotation.intervalMinutes)) }, [rotation.intervalMinutes])
+
+  const isStatic = backgroundType === 'image'
   const isGenerated = !isStatic
-  const activeGenType: Exclude<BackgroundType, 'image' | 'video'> = isGenerated && generatedBg ? generatedBg.type : 'mesh'
+  const activeGenType: Exclude<BackgroundType, 'image'> = isGenerated && generatedBg ? generatedBg.type : 'mesh'
 
   // Session-only pause state; any controller swap (type switch, regenerate)
   // recreates the loop running, so reset the button to match.
@@ -62,17 +73,6 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
   useEffect(() => { setPaused(false) }, [activeGenType, genPreset, generatedBg?.seed])
 
   const onFileSelect = async (f: File): Promise<void> => {
-    if (f.type.startsWith('video/')) {
-      // Hand the raw file over directly: it streams to disk over the
-      // binary upload route. A data-URL detour would inflate the bytes by a
-      // third (base64) and blow the RPC body limit on large clips. The clip
-      // plays from a local object URL straight away, so only a refusal of the
-      // background upload needs saying — silently it would just fail to persist
-      // and be gone after a reload.
-      const outcome = await setVideo(f, f.type)
-      if (!outcome.ok) notify(uploadRefusalText(outcome, t, 'videoUploadFail'), false)
-      return
-    }
     // Stream the original bytes straight to disk (no base64 round-trip, no
     // re-encoding), then point the wallpaper at the serve URL. The browser
     // decodes it natively like any <img>.
@@ -85,8 +85,108 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
     e.preventDefault()
     setDragOver(false)
     const f = e.dataTransfer.files?.[0]
-    if (f && (f.type.startsWith('image/') || f.type.startsWith('video/'))) void onFileSelect(f)
+    if (f && f.type.startsWith('image/')) void onFileSelect(f)
   }
+
+  // ── Folder-backed rotation ──────────────────────────────────────────────────
+  // `folders` is the same thing as `folder` to this page: both read their
+  // candidates live from a directory. What differs is how many directories, and
+  // the panel below asks that of `folderRight` rather than of `source`, so a
+  // left folder that has not been paired yet still shows its own row.
+  const isFolder = rotation.source === 'folder' || rotation.source === 'folders'
+  const isImageFolder = isFolder
+  // Read through a call, not a value: the host's picker capability only lands
+  // with the first read RPC, which re-renders this page through the store.
+  const canPick = canPickFolder()
+
+  const pickFolder = async (lane: 'left' | 'right'): Promise<void> => {
+    setRotBusy(true)
+    try {
+      const r = await pickRotationFolder(lane)
+      if (!r.ok) {
+        // A cancel is not a failure: nothing changed, so say nothing. The other
+        // codes come from the node half as stable English identifiers (they are
+        // not display text), so translate the ones worth naming and fall back
+        // to a generic line for the rest.
+        if (r.error === 'cancelled') return
+        const key = r.error === 'no folder picker' ? 'rotFolderUnavailable'
+          : r.error === 'no images' ? 'rotFolderEmpty'
+            : r.error === 'unreadable' ? 'rotFolderUnreadable'
+              : 'rotFolderFail'
+        notify(t(key), false)
+        return
+      }
+      notify(t('rotFolderCount').split('{n}').join(String(r.count ?? 0)))
+    } finally {
+      setRotBusy(false)
+    }
+  }
+
+  const clearFolder = async (): Promise<void> => {
+    setRotBusy(true)
+    try {
+      if (!(await clearRotationFolder())) notify(t('rotFolderFail'), false)
+    } finally {
+      setRotBusy(false)
+    }
+  }
+
+  const cadenceChips = (
+    <>
+      <button type="button" className={`dab-chip${rotation.mode === 'shuffle' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ mode: 'shuffle' })}>{t('rotShuffle')}</button>
+      <button type="button" className={`dab-chip${rotation.mode === 'order' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ mode: 'order' })}>{t('rotOrder')}</button>
+      <button type="button" className={`dab-chip${rotation.dual ? ' is-active' : ''}`}
+        onClick={() => setRotation({ dual: !rotation.dual })}>{t('rotDual')}</button>
+      <span className="dab-chip-sep" />
+      <button type="button" className={`dab-chip${rotation.interval === 'reload' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ interval: 'reload' })}>{t('rotReload')}</button>
+      <button type="button" className={`dab-chip${rotation.interval === 'minutes' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ interval: 'minutes' })}>{t('rotMinutes')}</button>
+      <button type="button" className={`dab-chip${rotation.interval === 'daily' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ interval: 'daily' })}>{t('rotDaily')}</button>
+      <button type="button" className={`dab-chip${rotation.interval === 'weekly' ? ' is-active' : ''}`}
+        onClick={() => setRotation({ interval: 'weekly' })}>{t('rotWeekly')}</button>
+      <button type="button" className="dab-btn" disabled={rotBusy}
+        onClick={() => { setRotBusy(true); void rotateNow().finally(() => setRotBusy(false)) }}>
+        <RefreshIcon size={13} />{t('rotNow')}
+      </button>
+    </>
+  )
+
+  // The custom gap is editable only while its own cadence is selected: it is a
+  // parameter OF that cadence, and showing it next to "every refresh" would
+  // invite edits that change nothing. The field keeps a local draft while being
+  // typed in, because a controlled number input fed straight from the clamped
+  // config would rewrite "1" into the minimum before the user finished typing
+  // "15". The draft is pushed through the store on Enter or on blur, so a
+  // half-typed number never becomes the live cadence.
+  const commitGap = () => {
+    const n = Number(gapDraft)
+    if (gapDraft.trim() === '' || !Number.isFinite(n)) {
+      // Nothing usable typed: snap the field back to what is stored.
+      setGapDraft(String(rotation.intervalMinutes))
+      return
+    }
+    setRotation({ intervalMinutes: n })
+    // Echo back what the store will actually keep, so the field cannot show a
+    // value the node half clamped away.
+    setGapDraft(String(Math.min(INTERVAL_MINUTES_MAX, Math.max(INTERVAL_MINUTES_MIN, Math.round(n)))))
+  }
+  const cadenceGap = rotation.interval === 'minutes' ? (
+    <label className="dab-time-label" style={{ marginTop: 8 }}>
+      {t('rotEvery')}
+      <input type="number" className="dab-num" style={{ flex: '0 0 76px' }}
+        min={INTERVAL_MINUTES_MIN} max={INTERVAL_MINUTES_MAX} step={1}
+        value={gapDraft}
+        disabled={rotBusy}
+        onChange={e => setGapDraft(e.target.value)}
+        onBlur={commitGap}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitGap() } }} />
+      <span>{t('rotMinutesUnit')}</span>
+    </label>
+  ) : null
 
   const applyUrl = async () => {
     const u = urlVal.trim()
@@ -100,16 +200,6 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
       setWpFromServer(r.wallpaperUrl ?? null)
       setUrlOpen(false)
       setUrlVal('')
-    } else if (r.error === 'not an image') {
-      // A video URL: stream it into the video slot through the server and
-      // play from the serve route.
-      const ok = await setVideoFromUrl(u)
-      if (ok) {
-        setUrlOpen(false)
-        setUrlVal('')
-      } else {
-        setUrlErr(t('bgUrlVideoFail'))
-      }
     } else {
       setUrlErr(r.error === 'invalid url' || r.error === 'unsupported scheme'
         ? t('bgUrlBadHttp')
@@ -120,7 +210,7 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
 
   const switchToStatic = () => {
     if (isStatic) return
-    setBgType(isVideo || cfg.videoMime !== null ? 'video' : 'image')
+    setBgType('image')
   }
 
   const setMode = (m: BgMode) => {
@@ -131,7 +221,7 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
     saveConfig()
   }
 
-  const setGenType = (type: Exclude<BackgroundType, 'image' | 'video'>) => {
+  const setGenType = (type: Exclude<BackgroundType, 'image'>) => {
     if (type === activeGenType) return
     setPaused(false)
     setBgType(type)
@@ -146,7 +236,7 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
     setGeneratedBg({ ...ensureGenParams(), ...patch } as GeneratedBgParams)
   }
 
-  const typeMeta: Array<{ type: Exclude<BackgroundType, 'image' | 'video'>; labelKey: string; descKey: string; thumb: string }> = [
+  const typeMeta: Array<{ type: Exclude<BackgroundType, 'image'>; labelKey: string; descKey: string; thumb: string }> = [
     { type: 'mesh', labelKey: 'bgTypeMesh', descKey: 'bgMeshDesc', thumb: 'dab-thumb-mesh' },
     { type: 'shader', labelKey: 'bgTypeShader', descKey: 'bgShaderDesc', thumb: 'dab-thumb-shader' },
     { type: 'pattern', labelKey: 'bgTypePattern', descKey: 'bgPatternDesc', thumb: 'dab-thumb-pattern' },
@@ -181,11 +271,14 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
         <div className="dab-hero">
           {storeUrl ? (
             <>
-              <img className="dab-hero-img" src={storeUrl} alt="" draggable={false} />
+              <div className={`dab-hero-split${storeUrlRight ? '' : ' is-single'}`}>
+                <img className="dab-hero-img" src={storeUrl} alt="" draggable={false} />
+                {storeUrlRight ? (
+                  <img className="dab-hero-img dab-hero-img-r" src={storeUrlRight} alt="" draggable={false} />
+                ) : null}
+              </div>
               {isGenerated ? (
                 <span className="dab-hero-badge"><SparkleIcon size={11} />{t('liveBadge')}</span>
-              ) : isVideo ? (
-                <span className="dab-hero-badge"><VideoIcon size={11} />{t('bgVideoBadge')}</span>
               ) : null}
               <div className="dab-hero-veil">
                 {isStatic && storeUrl ? (
@@ -244,7 +337,7 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
             <button type="button" className="dab-btn dab-btn-soft" onClick={() => setUrlOpen(o => !o)}>
               <LinkIcon size={14} />{t('bgFromUrl')}
             </button>
-            {storeUrl || isVideo ? (
+            {storeUrl ? (
               <>
                 {isStatic && storeUrl ? (
                   <button type="button" className="dab-btn" disabled={mode !== 'fit'}
@@ -276,7 +369,7 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
           {urlErr ? (
             <p className="dab-urlerr" style={{ marginTop: 8, color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 }}>{urlErr}</p>
           ) : null}
-          {/* Adaptive placement for image/video backgrounds. "fit" keeps the
+          {/* Adaptive placement for image backgrounds. "fit" keeps the
               editor-committed framing; the pan/zoom editor only applies there. */}
           <div style={{ marginTop: 16 }}>
             <div className="dab-swatch-title">{t('bgModeTitle')}</div>
@@ -301,39 +394,79 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
             </button>
           </div>
           <p className="dab-hint" style={{ marginTop: 8 }}>{t('rotHint')}</p>
-          <div className="dab-thumbstrip">
-            {rotation.items.map((it, i) => (
-              <div key={it.file} className={`dab-thumb${rotation.enabled && i === rotation.current ? ' is-current' : ''}`}>
-                {it.thumb ? <img src={it.thumb} alt="" draggable={false} /> : <PhotoIcon size={15} />}
-                <button type="button" className="dab-thumb-x" title={t('rotRemove')}
-                  disabled={rotBusy} onClick={() => { setRotBusy(true); void removeRotationItem(i).finally(() => setRotBusy(false)) }}>
-                  <XIcon size={10} />
-                </button>
-              </div>
-            ))}
-            <button type="button" className="dab-thumb dab-thumb-add" title={t('rotAdd')} disabled={rotBusy}
-              onClick={() => rotFileRef.current?.click()}>
-              <PlusIcon size={16} />
-            </button>
+          <div className="dab-chip-row" style={{ marginBottom: 10 }}>
+            <button type="button" className={`dab-chip${rotation.source === 'pool' ? ' is-active' : ''}`} disabled={rotBusy}
+              onClick={() => { if (isFolder) void clearFolder() }}>{t('rotSourcePool')}</button>
+            <button type="button" className={`dab-chip${isImageFolder ? ' is-active' : ''}`} disabled={rotBusy || !canPick}
+              title={canPick ? undefined : t('rotFolderUnavailable')}
+              onClick={() => { if (!isImageFolder) void pickFolder('left') }}>{t('rotSourceFolder')}</button>
           </div>
-          {rotation.items.length > 0 ? (
-            <div className="dab-chip-row" style={{ marginTop: 12 }}>
-              <button type="button" className={`dab-chip${rotation.mode === 'shuffle' ? ' is-active' : ''}`}
-                onClick={() => setRotation({ mode: 'shuffle' })}>{t('rotShuffle')}</button>
-              <button type="button" className={`dab-chip${rotation.mode === 'order' ? ' is-active' : ''}`}
-                onClick={() => setRotation({ mode: 'order' })}>{t('rotOrder')}</button>
-              <span className="dab-chip-sep" />
-              <button type="button" className={`dab-chip${rotation.interval === 'reload' ? ' is-active' : ''}`}
-                onClick={() => setRotation({ interval: 'reload' })}>{t('rotReload')}</button>
-              <button type="button" className={`dab-chip${rotation.interval === 'daily' ? ' is-active' : ''}`}
-                onClick={() => setRotation({ interval: 'daily' })}>{t('rotDaily')}</button>
-              <button type="button" className={`dab-chip${rotation.interval === 'weekly' ? ' is-active' : ''}`}
-                onClick={() => setRotation({ interval: 'weekly' })}>{t('rotWeekly')}</button>
-              <button type="button" className="dab-btn" disabled={rotBusy}
-                onClick={() => { setRotBusy(true); void rotateNow().finally(() => setRotBusy(false)) }}>
-                <RefreshIcon size={13} />{t('rotNow')}
+          {isFolder ? (
+            <div className="dab-thumbstrip">
+              <div className="dab-folder">
+                <div className="dab-folder-path" title={rotation.folder ?? ''}>{rotation.folder ?? t('rotPickFolder')}</div>
+                <div className="dab-hint" style={{ marginTop: 2 }}>{t('rotFolderHint')}</div>
+                <div className="dab-hint" style={{ marginTop: 2 }}>
+                  {rotation.folderCount > 0 ? t('rotFolderCount').split('{n}').join(String(rotation.folderCount)) : ''}
+                </div>
+                {/* The right lane only exists once it has a directory of its own,
+                    so its row appears with the folder rather than with the mode:
+                    an empty right row would read as "chosen but broken". */}
+                {rotation.folderRight !== null ? (
+                  <>
+                    <div className="dab-folder-path" style={{ marginTop: 8 }} title={rotation.folderRight}>{rotation.folderRight}</div>
+                    <div className="dab-hint" style={{ marginTop: 2 }}>{t('rotFolderRightHint')}</div>
+                    <div className="dab-hint" style={{ marginTop: 2 }}>
+                      {rotation.folderRightCount > 0 ? t('rotFolderCount').split('{n}').join(String(rotation.folderRightCount)) : ''}
+                    </div>
+                  </>
+                ) : null}
+                <div className="dab-chip-row" style={{ marginTop: 8 }}>
+                  <button type="button" className="dab-btn" disabled={rotBusy || !canPick}
+                    onClick={() => { void pickFolder('left') }}>{t('rotChangeFolder')}</button>
+                  <button type="button" className="dab-btn" disabled={rotBusy || !canPick}
+                    title={canPick ? undefined : t('rotFolderUnavailable')}
+                    onClick={() => { void pickFolder('right') }}>{t('rotFolderRight')}</button>
+                  <button type="button" className="dab-btn" disabled={rotBusy}
+                    onClick={() => { void clearFolder() }}>{t('rotClearFolder')}</button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="dab-thumbstrip">
+              {rotation.items.map((it, i) => (
+                <div key={it.file} className={`dab-thumb${rotation.enabled && i === rotation.current ? ' is-current' : ''}`}>
+                  {it.thumb ? <img src={it.thumb} alt="" draggable={false} /> : <PhotoIcon size={15} />}
+                  <button type="button" className="dab-thumb-x" title={t('rotRemove')}
+                    disabled={rotBusy} onClick={() => { setRotBusy(true); void removeRotationItem(i).finally(() => setRotBusy(false)) }}>
+                    <XIcon size={10} />
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="dab-thumb dab-thumb-add" title={t('rotAdd')} disabled={rotBusy}
+                onClick={() => rotFileRef.current?.click()}>
+                <PlusIcon size={16} />
               </button>
             </div>
+          )}
+          {isFolder ? (
+            rotation.folder !== null ? (
+              <>
+                <div className="dab-chip-row" style={{ marginTop: 12 }}>{cadenceChips}</div>
+                {cadenceGap}
+              </>
+            ) : null
+          ) : rotation.items.length > 0 ? (
+            <>
+              <div className="dab-chip-row" style={{ marginTop: 12 }}>{cadenceChips}</div>
+              {/* The lane toggle rides with the cadence controls because it is a
+                  property of the rotation, not of one cadence: left/right lanes
+                  are the same step drawn twice, so they share every setting. */}
+              {rotation.dual && rotation.folder === null ? (
+                <div className="dab-hint" style={{ marginTop: 6 }}>{t('rotDualHint')}</div>
+              ) : null}
+              {cadenceGap}
+            </>
           ) : null}
           <input ref={rotFileRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
             const files = Array.from(e.target.files ?? [])
@@ -452,23 +585,28 @@ export function BackgroundPage({ p, notify }: { p: ThemeSectionProps; notify: (m
           fmt={v => `${v}px`}
           onInput={v => { cfg.blur = v; setWpBlur(v); saveConfig() }}
           onChange={v => setBl(v)} />
+        {/* Shown only where a margin actually exists — the same condition the
+            fade itself uses, so the slider never offers a no-op. */}
+        {mode === 'fit' || mode === 'center' ? (
+          <LiveSlider label={t('wpEdgeFade')} min={0} max={60} step={1} def={rEdgeFade()}
+            fmt={v => (v === 0 ? t('wpEdgeFadeOff') : `${v}%`)}
+            onInput={v => { cfg.wpEdgeFade = v; setWpEdgeFade(); saveConfig() }}
+            onChange={v => setEdgeFade(v)} />
+        ) : null}
         <p className="dab-hint" style={{ marginTop: 12 }}>{t('bgHint')}</p>
       </section>
 
-      <input ref={fileRef} type="file" accept="image/*,video/*" style={{ display: 'none' }} onChange={e => {
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => {
         const f = e.target.files?.[0]; if (!f) return
         void onFileSelect(f); e.target.value = ''
       }} />
 
-      {/* Background editor modal (image/video + fit mode only). For videos
-          the reference is the captured frame snapshot — same pixels as the
-          playing video, so the committed framing maps 1:1 onto the layer. */}
+      {/* Background editor modal (fit mode only): the pan/zoom framing is
+          committed into the same bgState the wallpaper layer reads. */}
       {editorOpen && storeUrl && isStatic && mode === 'fit' ? (
         <BgEditor url={storeUrl} t={t} onClose={() => setEditorOpen(false)}
           onCommit={(z, x, y, iw, ih) => {
-            const st = { zoom: z, x, y, iw, ih }
-            if (backgroundType === 'video') cfg.videoBgState = st
-            else cfg.bgState = st
+            cfg.bgState = { zoom: z, x, y, iw, ih }
             applyWp(); saveConfig(); setEditorOpen(false)
           }} />
       ) : null}

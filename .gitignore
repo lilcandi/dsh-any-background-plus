@@ -1,3 +1,13 @@
 node_modules/
 .git/
-*.npmignore
+.npmignore
+# Local toolchain scratch from the sandboxed build (npm cannot use the shared
+# cache dir here, so it is redirected into the repo).
+.npm-cache/
+.pnpm-home/
+# pnpm content-addressable store the profile install was pointed at, so it did
+# not have to write into the shared global store.
+.pnpm-store/
+# Vision Router scratch (materialized screenshots, crops, diff artifacts).
+.dsh-vision-router/
+

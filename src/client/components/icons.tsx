@@ -29,10 +29,6 @@ export const PhotoIcon = ({ size, className }: { size?: number; className?: stri
   <Glyph size={size} className={className}><rect x="2" y="3.2" width="12" height="9.6" rx="2" /><circle cx="5.7" cy="6.3" r="0.9" /><path d="M14 10.4l-2.8-2.8-4.8 4.8" /></Glyph>
 )
 
-export const VideoIcon = ({ size, className }: { size?: number; className?: string }) => (
-  <Glyph size={size} className={className}><rect x="1.5" y="4.2" width="8.8" height="7.6" rx="2" /><path d="M10.3 6.9l4.2-2.4v7l-4.2-2.4" /></Glyph>
-)
-
 export const TextIcon = ({ size, className }: { size?: number; className?: string }) => (
   <Glyph size={size} className={className}><path d="M3 4.2h10M3 8h10M3 11.8h6.5" /></Glyph>
 )

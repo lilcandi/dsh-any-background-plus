@@ -101,9 +101,9 @@ export interface StrokeConfig {
 /** Per-part text stroke (-webkit-text-stroke), same group keys as PartBlurs. */
 export type PartStrokes = Record<keyof PartBlurs, StrokeConfig>
 
-export type BackgroundType = 'image' | 'video' | 'mesh' | 'shader' | 'pattern'
+export type BackgroundType = 'image' | 'mesh' | 'shader' | 'pattern'
 
-/** Adaptive placement of a static (image/video) background. */
+/** Adaptive placement of a static background. */
 export type BgMode = 'fit' | 'fill' | 'stretch' | 'tile' | 'center'
 
 /** Forced interface scheme: 'auto' derives light/dark from the color's lightness. */
@@ -118,6 +118,8 @@ export interface ProfileAppearance {
   strokes: PartStrokes
   settingsOpacity: number
   wallpaperOpacity: number
+  /** Feather width for the picture's edge, as a percentage of its shorter side. */
+  wpEdgeFade: number
   blur: number
   chatTextOpacity: number
   trajectoryOpacity: number
@@ -142,16 +144,57 @@ export interface RotationItem {
   thumb: string
 }
 
+/** Where a rotation pool's candidates live: the built-in pool of files copied
+ *  into the data dir, a single directory of the operator's own read in place,
+ *  or two directories — one per dual lane — read in place at the same time. */
+export type RotationSource = 'pool' | 'folder' | 'folders'
+
+/** How often a rotation may advance. `minutes` needs a live timer: the page
+ *  stays open and the client advances on its own, unlike the dated cadences
+ *  which the server settles on the next read. Its length is
+ *  `intervalMinutes`, the operator's own gap. */
+export type RotationInterval = 'reload' | 'minutes' | 'daily' | 'weekly'
+/** Bounds of the `minutes` cadence; mirrors the node half's constants. */
+export const INTERVAL_MINUTES_MIN = 1
+export const INTERVAL_MINUTES_MAX = 1440
+
 /** Wallpaper rotation pool + cadence. Advancing copies the chosen file into
  *  the active wallpaper slot, so the rest of the pipeline is untouched. */
 export interface RotationConfig {
   enabled: boolean
+  source: RotationSource
+  /** Absolute path of the folder-mode directory (null in pool mode, and the
+   *  LEFT lane of the dual-folder mode). */
+  folder: string | null
+  /** Images seen in `folder` at the last pick or advance (display only). */
+  folderCount: number
+  /** Absolute path of the RIGHT lane's directory in the dual-folder mode (null
+   *  in every other mode). One directory per side, each read in place, while
+   *  `mode` and the cadence stay shared — two sources, not two rotations. */
+  folderRight: string | null
+  /** Images seen in `folderRight` at the last pick or advance (display only). */
+  folderRightCount: number
   mode: 'shuffle' | 'order'
-  interval: 'reload' | 'daily' | 'weekly'
+  interval: RotationInterval
+  /** Wall-clock gap between advances, in minutes, for the `minutes` cadence.
+   *  Kept out of `interval` itself so switching cadence and back remembers it. */
+  intervalMinutes: number
+  /** Show two different pictures at once, one pinned to each side of the
+   *  viewport, instead of one picture across the middle. The wall is painted
+   *  behind the whole app while the host's columns sit on top of it, so a
+   *  dead-centre subject can end up under the conversation sidebar; splitting
+   *  into a left and a right lane puts both subjects in the strips the host
+   *  leaves empty. The two lanes advance in lockstep — this is one rotation
+   *  drawn twice, not a second rotation. */
+  dual: boolean
   /** Index of the item currently active. */
   current: number
   items: RotationItem[]
-  /** ISO timestamp of the last automatic advance (drives daily/weekly cadence). */
+  /** Actual sequence, in the same name order as `items`, of the names last
+   *  painted into each lane. The rotation picks its next index from these, so
+   *  the lanes cannot collide even in shuffle mode. */
+  laneItems: string[]
+  /** ISO timestamp of the last automatic advance (drives every cadence). */
   lastRotate: string | null
 }
 
@@ -221,19 +264,17 @@ export interface ThemeConfig {
   settingsOpacity: number
   /** Wallpaper opacity (0..1). */
   wallpaperOpacity: number
+  /** Feather width for the picture's edge, as a percentage of its shorter side
+   *  (0 = the edge stays a hard cut against the margin fill). */
+  wpEdgeFade: number
   /** Wallpaper blur (px, 0..60). */
   blur: number
   /** Wallpaper placement state (zoom + fractional center + intrinsic size). */
   bgState: BgState
-  /** Video placement state — a separate slot so editing the video framing
-   *  never clobbers the image framing and vice versa. */
-  videoBgState: BgState
   /** Current background source type. */
   backgroundType: BackgroundType
-  /** Placement mode for image/video backgrounds (default: editor-driven fit). */
+  /** Placement mode for image backgrounds (default: editor-driven fit). */
   bgMode: BgMode
-  /** MIME type of the persisted video background (null when none stored). */
-  videoMime: string | null
   /** MIME type of the persisted custom font (null when none stored). */
   fontMime: string | null
   /** Whether the stored custom font is applied to the interface. */
@@ -267,6 +308,10 @@ export interface ThemeConfig {
 /** State shape of the section's reactive store (URL, color, background type). */
 export interface ThemeStoreState {
   url: string | null
+  /** Dual mode's right lane, for the settings preview: the hero mirrors the
+   *  wall's 50/50 split, and a React surface cannot read the module-level image
+   *  state without missing rotation updates. null whenever dual mode is off. */
+  urlRight: string | null
   rev: number
   colorRev: number
   color: [number, number, number] | null
@@ -284,7 +329,7 @@ export interface ThemeStoreState {
 }
 
 /** Props the slots host injects into the theme section. */
-/** Why a binary upload (wallpaper / video / font) was refused. The node half
+/** Why a binary upload (wallpaper / font) was refused. The node half
  *  tags the reason and echoes the limit it enforced for a size refusal, so the
  *  panel can say what happened in the user's own language — a bare "the fetch
  *  failed" left an oversized wallpaper looking like a silent no-op. */
@@ -304,11 +349,6 @@ export interface ThemeSectionProps {
   /** Point the wallpaper at a serve URL whose bytes are already persisted
    *  (raw upload / URL download / rotation). null removes the stored image. */
   setWpFromServer: (url: string | null) => void
-  /** Set/remove the background video. Prefers the raw Blob (streamed to
-   *  disk over the binary upload route); a data URL string is the small-file
-   *  legacy path through RPC. Resolves with the upload's outcome so the caller
-   *  can report a refusal (the local playback starts either way). */
-  setVideo: (source: Blob | string | null, mime: string | null) => Promise<UploadOutcome>
   setOps: (ops: PartOpacities) => void
   setBlurs: (blurs: PartBlurs) => void
   setStrokes: (strokes: PartStrokes) => void
@@ -321,6 +361,8 @@ export interface ThemeSectionProps {
   setFontEnabled: (v: boolean) => void
   setWop: (v: number) => void
   setBl: (v: number) => void
+  /** Commit the edge-feather slider (the value is already in cfg). */
+  setEdgeFade: (v: number) => void
   setSop: (v: number) => void
   setPanelOp: (v: number) => void
   setBgType: (type: BackgroundType) => void
@@ -340,7 +382,7 @@ export interface ThemeSectionProps {
   setSchemeOverride: (v: SchemeOverride) => void
   /** Patch the day/night schedule config. */
   setSchedule: (patch: Partial<ScheduleConfig>) => void
-  /** Patch the wallpaper rotation config (mode/interval/enabled). */
+  /** Patch the wallpaper rotation config (mode/interval/enabled/gap). */
   setRotation: (patch: Partial<RotationConfig>) => void
   /** Add image files to the rotation pool. */
   addRotationItems: (files: File[]) => Promise<boolean>
@@ -348,8 +390,15 @@ export interface ThemeSectionProps {
   removeRotationItem: (index: number) => Promise<boolean>
   /** Immediately advance the rotation to the next item. */
   rotateNow: () => Promise<boolean>
-  /** Download a background video from a network URL and activate it. */
-  setVideoFromUrl: (url: string) => Promise<boolean>
+  /** Whether the host offers an OS folder chooser for the picker button. Read
+   *  at render time: it is only known after the first read RPC lands. */
+  canPickFolder: () => boolean
+  /** Open the host's folder chooser and adopt the picked directory as the
+   *  rotation source. `previewed` says the server already swapped the wallpaper
+   *  slot; `rotation` is what it persisted, to mirror rather than re-save. */
+  pickRotationFolder: (lane?: 'left' | 'right') => Promise<{ ok: boolean; error?: string; folder?: string; count?: number; previewed?: boolean; rotation?: RotationConfig }>
+  /** Forget the picked folder and go back to the built-in pool. */
+  clearRotationFolder: () => Promise<boolean>
   /** Download the current theme (config + wallpaper data URL) as JSON. */
   exportTheme: () => void
   /** Import a theme JSON: applies config + wallpaper and persists to disk. */
@@ -359,7 +408,7 @@ export interface ThemeSectionProps {
 
 /** The store's bound actions the slots host hands to sectionInject. */
 export interface BoundActions {
-  syncBg: (url: string | null, rev: number, backgroundType?: BackgroundType, generatedBg?: GeneratedBgParams | null, bgRev?: number, regenerateOnReload?: boolean) => void
+  syncBg: (url: string | null, rev: number, backgroundType?: BackgroundType, generatedBg?: GeneratedBgParams | null, bgRev?: number, regenerateOnReload?: boolean, urlRight?: string | null) => void
   syncColor: (hsv: [number, number, number], rev: number) => void
   syncMeta: (profiles: ProfileEntry[], rotation: RotationConfig, schedule: ScheduleConfig, schemeOverride: SchemeOverride, activeProfile: string | null, rev: number) => void
 }

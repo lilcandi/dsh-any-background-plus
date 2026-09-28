@@ -1,4 +1,5 @@
 import type { BgState, ThemeConfig, PartOpacities, PartBlurs, PartStrokes, StrokeConfig, BgMode, ProfileEntry, RotationConfig, RotationItem, ScheduleConfig, SchemeOverride, ProfileAppearance } from './types'
+import { INTERVAL_MINUTES_MAX, INTERVAL_MINUTES_MIN } from './types'
 
 export const DEFAULT_CONFIG: ThemeConfig = {
   color: null,
@@ -31,14 +32,16 @@ export const DEFAULT_CONFIG: ThemeConfig = {
   // freshly uploaded picture — the other surface sliders above are mid-scale,
   // this one stays opaque.
   wallpaperOpacity: 1,
+  // Feather the picture's edge into the margin fill, as a share of the picture's
+  // shorter side. Off by default: on a perfectly matched aspect ratio there is no
+  // margin to blend into, so a non-zero default would only dim the picture.
+  wpEdgeFade: 0,
   // The 背景 page's own wallpaper blur, 0 for the same reason: a first install
   // shows the wallpaper exactly as uploaded.
   blur: 0,
   bgState: { zoom: 1, x: 0, y: 0, iw: 0, ih: 0 },
-  videoBgState: { zoom: 1, x: 0, y: 0, iw: 0, ih: 0 },
   backgroundType: 'image',
   bgMode: 'fit',
-  videoMime: null,
   fontMime: null,
   fontEnabled: true,
   generatedBg: null,
@@ -50,7 +53,7 @@ export const DEFAULT_CONFIG: ThemeConfig = {
   producedOpacity: 0.5,
   headerOpacity: 0.5,
   profiles: [],
-  rotation: { enabled: false, mode: 'shuffle', interval: 'daily', current: 0, items: [], lastRotate: null },
+  rotation: { enabled: false, source: 'pool', folder: null, folderCount: 0, folderRight: null, folderRightCount: 0, mode: 'shuffle', interval: 'daily', intervalMinutes: 5, dual: false, current: 0, items: [], laneItems: [], lastRotate: null },
   schedule: { enabled: false, mode: 'time', dayProfile: null, nightProfile: null, dayStart: '07:00', nightStart: '19:00' },
   schemeOverride: 'auto',
   activeProfile: null,
@@ -61,16 +64,16 @@ const clamp01 = (n: unknown, def: number): number =>
 
 // In-memory mirror of the file-backed store; the UI reads and mutates this,
 // and it is synced to disk via the RPC layer.
-export let cfg: ThemeConfig = { ...DEFAULT_CONFIG, opacities: { ...DEFAULT_CONFIG.opacities }, blurs: { ...DEFAULT_CONFIG.blurs }, strokes: structuredClone(DEFAULT_CONFIG.strokes), bgState: { ...DEFAULT_CONFIG.bgState }, videoBgState: { ...DEFAULT_CONFIG.videoBgState } }
+export let cfg: ThemeConfig = { ...DEFAULT_CONFIG, opacities: { ...DEFAULT_CONFIG.opacities }, blurs: { ...DEFAULT_CONFIG.blurs }, strokes: structuredClone(DEFAULT_CONFIG.strokes), bgState: { ...DEFAULT_CONFIG.bgState } }
 export let wpImageUrl: string | null = null
-// Retained across background-type switches so coming back to image/video
+// Dual mode's right pane. A second independent slot (not a second picture
+// inside wpImageUrl) because each pane is drawn with its own geometry: the
+// host's conversation column sits on top of the middle of the wall, so the two
+// pictures hug the left and right edges instead of meeting in the centre.
+export let wpImageRightUrl: string | null = null
+// Retained across background-type switches so coming back to image
 // restores the original upload.
 export let wpUrl: string | null = null
-export let wpVideoUrl: string | null = null
-/** Captured video frame standing in for previews/color extraction (still-image APIs). */
-export let wpVideoSnapshot: string | null = null
-/** Local blob URL backing an in-session video; revoked when replaced or cleared. */
-let wpVideoObjectUrl: string | null = null
 
 export function setWpUrl(url: string | null): void { wpUrl = url }
 // The serve URL is stable across in-place replacements (upload / URL download /
@@ -89,36 +92,7 @@ export function bumpImageRev(url: string | null): string | null {
   return `${url}${url.includes('?') ? '&' : '?'}r=${imageRev}`
 }
 export function setWpImageUrl(url: string | null): void { wpImageUrl = bumpImageRev(url) }
-// The serve URL is stable, so replacing the stored video needs a query-string
-// cache-buster or the player keeps the cached copy.
-let videoRev = 0
-export function setWpVideoUrl(url: string | null, mime: string | null): void {
-  if (url === null) {
-    wpVideoUrl = null
-    wpVideoSnapshot = null
-  } else {
-    videoRev++
-    // Blob URLs are unique per object; a query string can break their
-    // resolution in some engines, so they skip the cache-buster.
-    wpVideoUrl = url.startsWith('blob:') ? url : `${url}${url.includes('?') ? '&' : '?'}r=${videoRev}`
-  }
-  // Release the previous in-session object URL when replaced or cleared.
-  if (wpVideoObjectUrl !== null && wpVideoObjectUrl !== url) {
-    URL.revokeObjectURL(wpVideoObjectUrl)
-    wpVideoObjectUrl = null
-  }
-  if (url !== null && url.startsWith('blob:')) wpVideoObjectUrl = url
-  cfg.videoMime = url ? mime : null
-}
-export function setWpVideoSnapshot(url: string | null): void { wpVideoSnapshot = url }
-
-/** Release the in-session video object URL (plugin teardown). */
-export function disposeVideoObjectUrl(): void {
-  if (wpVideoObjectUrl !== null) {
-    URL.revokeObjectURL(wpVideoObjectUrl)
-    wpVideoObjectUrl = null
-  }
-}
+export function setWpImageRightUrl(url: string | null): void { wpImageRightUrl = bumpImageRev(url) }
 export function setBgState(s: BgState): void { cfg.bgState = s }
 
 // Brightness verdict of the active generated background, analyzed once per
@@ -130,14 +104,13 @@ export function rBgDark(): boolean | null { return bgDark }
 export function rHasColor(): boolean { return cfg.color !== null }
 export function rColor(): [number, number, number] { return cfg.color ?? [220, 0.55, 0.25] }
 export function rWpImage(): string | null { return wpImageUrl }
-export function rWpVideo(): string | null { return wpVideoUrl }
+export function rWpImageRight(): string | null { return wpImageRightUrl }
 export function rBgMode(): BgMode { return cfg.bgMode ?? DEFAULT_CONFIG.bgMode }
 export function rChatTextOpacity(): number { return clamp01(cfg.chatTextOpacity, DEFAULT_CONFIG.chatTextOpacity) }
 export function rTrajectoryOpacity(): number { return clamp01(cfg.trajectoryOpacity, DEFAULT_CONFIG.trajectoryOpacity) }
-/** Display URL: the uploaded image/video snapshot per active type, else the generated snapshot. */
+/** Display URL: the uploaded image per active type, else the generated snapshot. */
 export function rWp(): string | null {
   if (cfg.backgroundType === 'image') return wpImageUrl
-  if (cfg.backgroundType === 'video') return wpVideoSnapshot
   return wpUrl
 }
 export function rOps(): PartOpacities {
@@ -184,6 +157,11 @@ export function rStrokes(): PartStrokes {
   return strokesFrom(cfg.strokes)
 }
 export function rWop(): number { return clamp01(cfg.wallpaperOpacity, DEFAULT_CONFIG.wallpaperOpacity) }
+/** Edge feather as a percentage (0..100) of the picture's shorter side. */
+export function rEdgeFade(): number {
+  const n = cfg.wpEdgeFade
+  return typeof n === 'number' && isFinite(n) ? Math.min(100, Math.max(0, n)) : DEFAULT_CONFIG.wpEdgeFade
+}
 export function rBl(): number {
   return typeof cfg.blur === 'number' ? Math.min(60, Math.max(0, cfg.blur)) : DEFAULT_CONFIG.blur
 }
@@ -192,15 +170,26 @@ export function rPanelOpacity(): number { return clamp01(cfg.panelOpacity, DEFAU
 export function rProducedOpacity(): number { return clamp01(cfg.producedOpacity, DEFAULT_CONFIG.producedOpacity) }
 export function rHeaderOpacity(): number { return clamp01(cfg.headerOpacity, DEFAULT_CONFIG.headerOpacity) }
 export function rBgState(): BgState { return cfg.bgState }
-export function rVideoBgState(): BgState { return cfg.videoBgState }
 
 // ── Profiles / rotation / schedule / scheme ──────────────────────────────────
 export function rProfiles(): ProfileEntry[] { return Array.isArray(cfg.profiles) ? cfg.profiles : [] }
+/** Coerce any unknown rotation blob into the shipping shape. Exported because
+ *  the RPC answers that carry a rotation back (folder pick, advance) have to be
+ *  normalized the same way the disk config is — a raw spread would let an
+ *  unvalidated `folder`/`current` from the server land in the saved config. */
+export function normalizeRotation(raw: unknown): RotationConfig {
+  return adoptRotation(raw)
+}
 export function rRotation(): RotationConfig {
-  const r = cfg.rotation
-  return r && typeof r === 'object'
-    ? { ...DEFAULT_CONFIG.rotation, ...r, items: Array.isArray(r.items) ? r.items : [] }
-    : { ...DEFAULT_CONFIG.rotation, items: [] }
+  return adoptRotation(cfg.rotation)
+}
+/** Wall-clock gap of the `minutes` cadence, in ms. Clamped here rather than
+ *  where it is stored: the value drives `setInterval`, so a hand-edited config
+ *  must not be able to ask for a timer the browser would clamp anyway (or spin
+ *  on a sub-second gap). Mirrors the node half's rotationGapMs. */
+export function rotGapMs(rot: Pick<RotationConfig, 'intervalMinutes'>): number {
+  const n = typeof rot.intervalMinutes === 'number' && isFinite(rot.intervalMinutes) ? rot.intervalMinutes : DEFAULT_CONFIG.rotation.intervalMinutes
+  return Math.min(INTERVAL_MINUTES_MAX, Math.max(INTERVAL_MINUTES_MIN, n)) * 60_000
 }
 export function rSchedule(): ScheduleConfig {
   return cfg.schedule && typeof cfg.schedule === 'object' ? { ...DEFAULT_CONFIG.schedule, ...cfg.schedule } : { ...DEFAULT_CONFIG.schedule }
@@ -242,6 +231,7 @@ export function currentAppearance(): ProfileAppearance {
     strokes: rStrokes(),
     settingsOpacity: rSop(),
     wallpaperOpacity: rWop(),
+    wpEdgeFade: rEdgeFade(),
     blur: rBl(),
     chatTextOpacity: rChatTextOpacity(),
     trajectoryOpacity: rTrajectoryOpacity(),
@@ -259,6 +249,7 @@ export function applyAppearance(ap: ProfileAppearance): void {
   cfg.strokes = strokesFrom(ap.strokes)
   cfg.settingsOpacity = clamp01(ap.settingsOpacity, DEFAULT_CONFIG.settingsOpacity)
   cfg.wallpaperOpacity = clamp01(ap.wallpaperOpacity, DEFAULT_CONFIG.wallpaperOpacity)
+  cfg.wpEdgeFade = cl(ap.wpEdgeFade, 0, 100, DEFAULT_CONFIG.wpEdgeFade)
   cfg.blur = typeof ap.blur === 'number' ? Math.min(60, Math.max(0, ap.blur)) : DEFAULT_CONFIG.blur
   cfg.chatTextOpacity = clamp01(ap.chatTextOpacity, DEFAULT_CONFIG.chatTextOpacity)
   cfg.trajectoryOpacity = clamp01(ap.trajectoryOpacity, DEFAULT_CONFIG.trajectoryOpacity)
@@ -292,6 +283,7 @@ function adoptProfiles(raw: unknown): ProfileEntry[] {
         strokes: strokesFrom(ac.strokes),
         settingsOpacity: clamp01(ac.settingsOpacity, DEFAULT_CONFIG.settingsOpacity),
         wallpaperOpacity: clamp01(ac.wallpaperOpacity, DEFAULT_CONFIG.wallpaperOpacity),
+        wpEdgeFade: cl(ac.wpEdgeFade, 0, 100, DEFAULT_CONFIG.wpEdgeFade),
         blur: num(ac.blur, DEFAULT_CONFIG.blur),
         chatTextOpacity: clamp01(ac.chatTextOpacity, DEFAULT_CONFIG.chatTextOpacity),
         trajectoryOpacity: clamp01(ac.trajectoryOpacity, DEFAULT_CONFIG.trajectoryOpacity),
@@ -315,12 +307,33 @@ function adoptRotation(raw: unknown): RotationConfig {
       .slice(0, 30)
       .map(it => ({ file: it.file, thumb: typeof it.thumb === 'string' && it.thumb.startsWith('data:image/') && it.thumb.length <= 65536 ? it.thumb : '' }))
     : []
+  const folder = typeof r.folder === 'string' && r.folder.length > 0 ? r.folder : null
+  const folderRight = typeof r.folderRight === 'string' && r.folderRight.length > 0 ? r.folderRight : null
+  // Two directories are what the dual-folder mode IS, so a config carrying only
+  // one of them is not that mode and falls back rather than painting the same
+  // directory onto both lanes. Mirrors the node half.
+  const folders = r.source === 'folders' && folder !== null && folderRight !== null
+  // `minutes5` was the fixed five-minute cadence before the gap became
+  // adjustable; migrate configs written back then instead of dropping them to
+  // `daily`. Mirrors the node half, which does the same on read.
+  const legacyFast = (raw as { interval?: unknown } | null | undefined)?.interval === 'minutes5'
   return {
     enabled: r.enabled === true,
+    source: folders ? 'folders' : r.source === 'folder' && folder !== null ? 'folder' : 'pool',
+    folder,
+    folderCount: typeof r.folderCount === 'number' && isFinite(r.folderCount) && r.folderCount > 0 ? Math.floor(r.folderCount) : 0,
+    folderRight,
+    folderRightCount: typeof r.folderRightCount === 'number' && isFinite(r.folderRightCount) && r.folderRightCount > 0 ? Math.floor(r.folderRightCount) : 0,
     mode: r.mode === 'order' ? 'order' : 'shuffle',
-    interval: r.interval === 'reload' || r.interval === 'weekly' ? r.interval : 'daily',
+    interval: legacyFast ? 'minutes'
+      : r.interval === 'reload' || r.interval === 'minutes' || r.interval === 'weekly' ? r.interval : 'daily',
+    intervalMinutes: cl(r.intervalMinutes, INTERVAL_MINUTES_MIN, INTERVAL_MINUTES_MAX, legacyFast ? 5 : DEFAULT_CONFIG.rotation.intervalMinutes),
+    dual: r.dual === true,
     current: num(r.current, 0),
     items,
+    laneItems: Array.isArray(r.laneItems)
+      ? r.laneItems.filter((n): n is string => typeof n === 'string' && n.length > 0).slice(0, 2)
+      : [],
     lastRotate: typeof r.lastRotate === 'string' ? r.lastRotate : null,
   }
 }
@@ -362,7 +375,7 @@ export function adoptConfig(raw: unknown): void {
   for (const k of ['bg', 'sidebar', 'card', 'settings', 'chat', 'trajectory', 'input', 'panel', 'produced', 'header'] as const) {
     blurs[k] = num(bl[k], DEFAULT_CONFIG.blurs[k])
   }
-  const bgType = ['video', 'mesh', 'shader', 'pattern'].includes(c.backgroundType as string)
+  const bgType = ['mesh', 'shader', 'pattern'].includes(c.backgroundType as string)
     ? (c.backgroundType as ThemeConfig['backgroundType'])
     : DEFAULT_CONFIG.backgroundType
   const bgMode = (['fit', 'fill', 'stretch', 'tile', 'center'] as BgMode[]).includes(c.bgMode as BgMode) ? (c.bgMode as BgMode) : DEFAULT_CONFIG.bgMode
@@ -383,12 +396,11 @@ export function adoptConfig(raw: unknown): void {
     strokes: strokesFrom(c.strokes),
     settingsOpacity: num(c.settingsOpacity, DEFAULT_CONFIG.settingsOpacity),
     wallpaperOpacity: num(c.wallpaperOpacity, DEFAULT_CONFIG.wallpaperOpacity),
+    wpEdgeFade: cl(c.wpEdgeFade, 0, 100, DEFAULT_CONFIG.wpEdgeFade),
     blur: num(c.blur, DEFAULT_CONFIG.blur),
     bgState: adoptBgState((c.bgState ?? {}) as Partial<BgState>),
-    videoBgState: adoptBgState((c.videoBgState ?? {}) as Partial<BgState>),
     backgroundType: bgType,
     bgMode,
-    videoMime: typeof c.videoMime === 'string' ? c.videoMime : null,
     fontMime: typeof c.fontMime === 'string' ? c.fontMime : null,
     fontEnabled: typeof c.fontEnabled === 'boolean' ? c.fontEnabled : DEFAULT_CONFIG.fontEnabled,
     generatedBg: generatedBg ? normalizeGeneratedBg(generatedBg) : null,

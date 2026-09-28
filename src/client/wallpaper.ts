@@ -1,13 +1,32 @@
 import { PANEL_SURFACES } from './host-compat/versions/shared'
 import { HEADER_POPOVER_ATTR } from './header-tag'
-import { rWp, rWpImage, rWpVideo, rBgState, rVideoBgState, rBl, rWop, rOps, rSop, rStrokes, rColor, rHasColor, rBlurs, rBgMode, rChatTextOpacity, rTrajectoryOpacity, rPanelOpacity, rProducedOpacity, rHeaderOpacity, rScheme, rColorScheme, rSchemeOverride, cfg, setWpUrl, rBgDark, setBgDark, disposeVideoObjectUrl } from './state'
+import { rWp, rWpImage, rWpImageRight, rBgState, rBl, rWop, rEdgeFade, rOps, rSop, rStrokes, rColor, rHasColor, rBlurs, rBgMode, rChatTextOpacity, rTrajectoryOpacity, rPanelOpacity, rProducedOpacity, rHeaderOpacity, rScheme, rColorScheme, rSchemeOverride, cfg, setWpUrl, rBgDark, setBgDark } from './state'
 import type { BackgroundType, GeneratedBgParams, PartOpacities, PartBlurs, StrokeConfig } from './types'
 import { genTokens, toRgba, extractWallpaperColor, analyzeFrameDark } from './utils/color'
 import { loadImage } from './utils/image'
 import { createDynamicBackground, defaultParamsFor } from './utils/bg-generators'
 
 let wpEl: HTMLDivElement | null = null
-let videoEl: HTMLVideoElement | null = null
+/** Sits one layer deeper than the wallpaper and holds a blurred, cover-scaled
+ *  copy of the SAME picture. `fit`/`center` keep the whole image, so a picture
+ *  whose ratio differs from the window leaves flat black borders (a 4:3 photo on
+ *  a 21:9 screen fills only ~56% of the width). Filling that margin with the
+ *  picture's own colors — the treatment every media player uses — removes the
+ *  dead band without cropping anything. */
+let wpBackdropEl: HTMLDivElement | null = null
+/** Dual mode's LEFT pane: a sibling of `wpRightEl` pinned to the left half, so
+ *  the pair is exactly two halves split at the viewport's absolute centre. It
+ *  exists only once a dual picture is actually painted; a single picture keeps
+ *  using `wpEl` across the whole viewport so nothing about the existing framing,
+ *  margin fill, edge feather or drag downscale changes. */
+let wpLeftEl: HTMLDivElement | null = null
+/** Dual mode's right pane: the second picture, pinned to the right half. The
+ *  two lanes are separate elements with their own boxes rather than one picture
+ *  clipped in two, because each picture must be framed inside its own half: a
+ *  lane that reuses the editor's commit-point framing (a point on the WHOLE
+ *  viewport) drags its picture across the centre line and breaks the 50/50
+ *  split. */
+let wpRightEl: HTMLDivElement | null = null
 let appliedTokenNames: string[] = []
 let wpController: { canvas: HTMLCanvasElement; stop: () => void; pause?: () => void; resume?: () => void; snapshot: () => string } | null = null
 let snapshotListener: (() => void) | null = null
@@ -1211,10 +1230,7 @@ export function applyThemeColor(): void {
     // image and would otherwise leave the host's blank background on screen
     // for the whole decode. The verdict/skin settle a beat later on re-apply.
     applyWp()
-    // Video mode samples the frame snapshot through the video's own placement
-    // state; the image slot's framing does not apply to the snapshot.
-    const st = cfg.backgroundType === 'video' ? rVideoBgState() : rBgState()
-    void extractWallpaperColor(url, st).then(hsl => {
+    void extractWallpaperColor(url, rBgState()).then(hsl => {
       // A swap during the decode (upload / rotation) points every URL-keyed
       // cache at the new picture; only adopt the color when this wallpaper is
       // still the active one.
@@ -1247,14 +1263,6 @@ export function setBackgroundType(type: BackgroundType): void {
     applyThemeColor()
     return
   }
-  if (type === 'video') {
-    // Restore the retained video upload; the frame snapshot stays the preview URL.
-    clearDynamicBg()
-    setBgDark(null)
-    setWpUrl(null)
-    applyThemeColor()
-    return
-  }
   // Keep existing params for this generated type so sub-type switches preserve adjustments.
   if (!cfg.generatedBg || cfg.generatedBg.type !== type) {
     cfg.generatedBg = defaultParamsFor(type)
@@ -1270,10 +1278,7 @@ function randomSeed(): number {
  *  preserving the user's scale/intensity/speed/density/preset choices. */
 export function regenerateGeneratedBg(): void {
   const params = cfg.generatedBg
-  // 'video' also carries a generatedBg-less slot: bailing here keeps this from
-  // racing applyWp's video branch (it would clear the player's state while the
-  // video branch is setting it up).
-  if (!params || cfg.backgroundType === 'image' || cfg.backgroundType === 'video') return
+  if (!params || cfg.backgroundType === 'image') return
   cfg.generatedBg = { ...params, seed: randomSeed() }
   applyGeneratedBg(cfg.generatedBg)
 }
@@ -1287,7 +1292,13 @@ export function updateGeneratedBg(params: GeneratedBgParams): void {
 
 function applyGeneratedBg(params: GeneratedBgParams): void {
   clearDynamicBg()
-  clearVideoEl()
+  // Generated backgrounds paint the whole viewport themselves; there is no
+  // margin for an ambient fill, so the previous picture's one must go.
+  clearBackdropEl()
+  // Dual mode's two lanes are picture slots, so a generated background (which
+  // paints every pixel itself) has nothing for them to sit behind.
+  clearWpLeftEl()
+  clearWpRightEl()
   ensureWpContainer()
   wpController = createDynamicBackground(params)
   if (wpEl) {
@@ -1966,21 +1977,212 @@ function ensureWpContainer(): void {
   }
 }
 
-function clearVideoEl(): void {
-  if (videoEl === null) return
-  videoEl.pause()
-  videoEl.removeAttribute('src')
-  videoEl.load()
-  videoEl.remove()
-  videoEl = null
+/** Dual mode's left pane. Same fixed layer as `wpEl`, pinned to the left half of
+ *  the viewport. The host's conversation column sits over the middle of the
+ *  wall, which is exactly where a single picture puts its subject, so dual mode
+ *  shows two pictures in the strips the columns leave empty. */
+function ensureWpLeftEl(): HTMLDivElement {
+  if (wpLeftEl === null || !document.body.contains(wpLeftEl)) {
+    wpLeftEl = document.createElement('div')
+    wpLeftEl.style.cssText = 'position:fixed;top:0;left:0;bottom:0;width:50%;'
+      + 'z-index:-1;pointer-events:none;overflow:hidden;'
+      + 'background-repeat:no-repeat;background-position:center;background-size:contain;'
+    document.body.prepend(wpLeftEl)
+  }
+  return wpLeftEl
 }
 
+function clearWpLeftEl(): void {
+  wpLeftEl?.remove()
+  wpLeftEl = null
+  // The whole-viewport layer comes back for the single-picture path, which is
+  // also how a still-decoding lane keeps showing something sensible.
+  if (wpEl !== null) wpEl.style.visibility = ''
+}
+
+/** Dual mode's right pane. Same fixed layer as `wpEl`, pinned to the right half
+ *  of the viewport. Kept as a second element rather than a split of `wpEl` so
+ *  the two lanes can never disagree about where their box starts. */
+function ensureWpRightEl(): HTMLDivElement {
+  if (wpRightEl === null || !document.body.contains(wpRightEl)) {
+    wpRightEl = document.createElement('div')
+    wpRightEl.style.cssText = 'position:fixed;top:0;right:0;bottom:0;width:50%;'
+      + 'z-index:-1;pointer-events:none;overflow:hidden;'
+      + 'background-repeat:no-repeat;background-position:center;background-size:contain;'
+    document.body.prepend(wpRightEl)
+  }
+  return wpRightEl
+}
+
+function clearWpRightEl(): void {
+  wpRightEl?.remove()
+  wpRightEl = null
+}
+
+/** Base softness of the ambient margin fill. The user's own wallpaper blur
+ *  stacks on top of it; this layer is meant to read as a wash, never as detail. */
+const BACKDROP_BLUR_PX = 30
+/** A blur samples past its element's edges as transparent, so the fill would
+ *  fade out over roughly 1.5× the radius and leave a dark rim right at the
+ *  viewport border. Oversizing by 2× puts that fade off-screen. Sized in px
+ *  rather than % so it stays correct at any window size. */
+const BACKDROP_OVERHANG_PX = BACKDROP_BLUR_PX * 2
+
+/** The margin fill. `fit`/`center` keep the whole picture, so the layer above
+ *  paints only part of the window and leaves the rest to whatever is behind it
+ *  — flat black. Rather than crop the picture or ship a dead band, paint its own
+ *  colors there: the same URL, scaled `cover` and blurred, sits one z-index
+ *  deeper. The wallpaper layer stays transparent in the margin, so this shows
+ *  through only where the picture does not reach; once the ratio matches the
+ *  window there is simply nothing of it to see. */
+function ensureBackdropEl(): HTMLDivElement {
+  if (wpBackdropEl === null || !document.body.contains(wpBackdropEl)) {
+    wpBackdropEl = document.createElement('div')
+    // Oversized on purpose: a blurred element fades out at its own edges, and
+    // clamping it to the viewport would show that fade as a dark rim right at
+    // the border of the picture. Extending past the viewport puts the soft edge
+    // off-screen (a fixed element never grows the scroll area).
+    const o = BACKDROP_OVERHANG_PX
+    wpBackdropEl.style.cssText = `position:fixed;top:-${o}px;right:-${o}px;bottom:-${o}px;left:-${o}px;`
+      + 'z-index:-2;pointer-events:none;'
+      + 'background-repeat:no-repeat;background-size:cover;background-position:center;'
+    document.body.prepend(wpBackdropEl)
+  }
+  return wpBackdropEl
+}
+
+function clearBackdropEl(): void {
+  wpBackdropEl?.remove()
+  wpBackdropEl = null
+  // The edge feather only exists to blend into the fill, so it goes with it.
+  // Doing it here also means every existing clear path covers the fade, instead
+  // of relying on each one to remember.
+  if (wpEl !== null && wpEl.style.maskImage !== '') {
+    wpEl.style.maskImage = ''
+    wpEl.style.webkitMaskImage = ''
+  }
+}
+
+/** Whether this placement mode can leave a margin worth filling: `fit` and
+ *  `center` preserve the picture's ratio, while `fill` (cover) and `stretch`
+ *  already paint every pixel and `tile` repeats to the edges. */
+function modeLeavesMargin(mode: string): boolean {
+  return mode === 'fit' || mode === 'center'
+}
+
+/** The picture's rendered box in viewport pixels, or null while unknown.
+ *
+ *  Needed because the fade has to be painted at the picture's edge, not the
+ *  viewport's — and the mask cannot borrow that geometry the way one might hope:
+ *  `mask-size: contain` looks like it should track the picture, but the mask is a
+ *  gradient and a gradient has no intrinsic size, so `contain` resolves against
+ *  the whole border box instead. Measured directly: the fade stayed a hard step.
+ *  So the box is computed here and the mask is given explicit px stops. */
+function wpPictureBox(mode: string, url: string): { x: number; y: number; w: number; h: number } | null {
+  const W = window.innerWidth
+  const H = window.innerHeight
+  const bg = rBgState()
+  // Once the editor has committed a framing, bgState carries the intrinsic size
+  // and the arithmetic matches applyImageWp exactly.
+  if (mode === 'fit' && bg.iw > 0) {
+    const fit = Math.min(W / bg.iw, H / bg.ih)
+    const w = bg.iw * fit * bg.zoom
+    const h = bg.ih * fit * bg.zoom
+    return { x: bg.x * W - w / 2, y: bg.y * H - h / 2, w, h }
+  }
+  // Otherwise the layer is contain-fitted (a fresh image, and `center` until its
+  // decode lands), which needs the intrinsic size from the decode cache.
+  if (imgNat === null || imgNat.url !== url || imgNat.w <= 0) return null
+  if (mode === 'fit') {
+    const fit = Math.min(W / imgNat.w, H / imgNat.h)
+    const w = imgNat.w * fit
+    const h = imgNat.h * fit
+    return { x: (W - w) / 2, y: (H - h) / 2, w, h }
+  }
+  if (mode === 'center') {
+    return { x: (W - imgNat.w) / 2, y: (H - imgNat.h) / 2, w: imgNat.w, h: imgNat.h }
+  }
+  return null
+}
+
+/** Feather the picture's own border into the fill behind it, so the two layers
+ *  meet through a ramp instead of a seam. Only meaningful where a margin exists
+ *  (`fit`/`center`); elsewhere the picture already reaches the viewport edge and
+ *  a fade would just dim the screen's border. */
+function applyWpEdgeFade(mode: string, url: string): void {
+  const el = wpEl
+  if (el === null) return
+  const pct = rEdgeFade()
+  const box = pct > 0 && modeLeavesMargin(mode) ? wpPictureBox(mode, url) : null
+  if (box === null) {
+    if (el.style.maskImage !== '') {
+      el.style.maskImage = ''
+      el.style.webkitMaskImage = ''
+    }
+    return
+  }
+  // The slider reads as a share of the picture, but a feather much past a third
+  // of the shorter side would eat the picture rather than blend its edge.
+  const short = Math.min(box.w, box.h)
+  const f = Math.max(1, Math.min((short * pct) / 100, short / 3))
+  const x0 = box.x, x1 = box.x + box.w
+  const y0 = box.y, y1 = box.y + box.h
+  // One ramp per axis, combined with `intersect`, so a corner fades on both axes
+  // at once instead of showing a single slanted ramp. Stops are in px because the
+  // mask spans the viewport while the picture does not.
+  const image =
+    `linear-gradient(to right, transparent ${x0}px, #000 ${x0 + f}px, #000 ${x1 - f}px, transparent ${x1}px), ` +
+    `linear-gradient(to bottom, transparent ${y0}px, #000 ${y0 + f}px, #000 ${y1 - f}px, transparent ${y1}px)`
+  if (el.style.maskImage !== image) {
+    el.style.maskImage = image
+    el.style.webkitMaskImage = image
+  }
+  el.style.maskRepeat = 'no-repeat'
+  el.style.webkitMaskRepeat = 'no-repeat'
+  // The standard keyword is `intersect`; the legacy -webkit- spelling of the
+  // same operator is `source-in`, and the two grammars are mutually exclusive on
+  // one property, so set whichever this engine actually understands.
+  if (typeof CSS !== 'undefined' && CSS.supports?.('mask-composite', 'intersect') === true) {
+    el.style.maskComposite = 'intersect'
+  } else {
+    el.style.webkitMaskComposite = 'source-in'
+  }
+}
+
+/** Re-run the fade once an image's intrinsic size is known, for the contain-fit
+ *  case where the box could not be computed on the first pass. Also the live
+ *  path for the slider, which is why it runs even at 0 — that is how a fade is
+ *  switched off without tearing down the fill underneath it. */
+function refreshEdgeFade(): void {
+  const url = rWpImage()
+  if (url !== null) applyWpEdgeFade(rBgMode(), url)
+}
 /** Intrinsic-size cache for the center mode (native pixels of the current image). */
 let imgNat: { url: string; w: number; h: number } | null = null
+/** Per-URL decode cache. Keyed by URL rather than a single slot because dual
+ *  mode measures two different pictures, and a one-slot cache would have the
+ *  two lanes evict each other on every re-apply, so the `center` mode would
+ *  never reach its native-size branch. Sizes only — it holds no pixel data. */
+const natSizes = new Map<string, { w: number; h: number }>()
+/** Synchronous lookup, because the dual lanes must both be measured before
+ *  either is laid out. Reading the single-slot `imgNat` would let whichever lane
+ *  ran second claim the measurement and push the first into the `contain`
+ *  fallback — one lane painted to its box, the other to its ratio: the exact
+ *  "one picture bigger than the other" split dual mode exists to prevent. */
+function natSizeOf(url: string): { w: number; h: number } | null {
+  if (imgNat !== null && imgNat.url === url) return { w: imgNat.w, h: imgNat.h }
+  return natSizes.get(url) ?? null
+}
 function imageNatSize(url: string, cb: (w: number, h: number) => void): void {
   if (imgNat !== null && imgNat.url === url) { cb(imgNat.w, imgNat.h); return }
+  const cached = natSizes.get(url)
+  if (cached !== undefined) { imgNat = { url, ...cached }; cb(cached.w, cached.h); return }
   void loadImage(url).then(img => {
     if (!img) { cb(0, 0); return }
+    // The decode is async, so the active picture may have moved on; report this
+    // URL's size to the caller but only cache it when it is still the one in use.
+    if (natSizes.size > 8) natSizes.clear()
+    natSizes.set(url, { w: img.naturalWidth, h: img.naturalHeight })
     imgNat = { url, w: img.naturalWidth, h: img.naturalHeight }
     cb(img.naturalWidth, img.naturalHeight)
   })
@@ -2026,10 +2228,21 @@ function setDragLow(on: boolean): void {
     captureLowRes(full, low => {
       if (!dragLow || !wpEl || low === null) return
       if (wpEl.style.backgroundImage !== `url("${low}")`) wpEl.style.backgroundImage = `url("${low}")`
+      // The fill is cover-scaled and heavily blurred, so the downscaled copy is
+      // visually indistinguishable there while the blur re-rasterizes it every
+      // frame — swap it down as well so the drag stays cheap.
+      if (wpBackdropEl !== null && wpBackdropEl.style.backgroundImage !== `url("${low}")`) {
+        wpBackdropEl.style.backgroundImage = `url("${low}")`
+      }
     })
   } else {
     dragLow = false
     if (wpEl.style.backgroundImage !== `url("${full}")`) wpEl.style.backgroundImage = `url("${full}")`
+    // Restore the sharp fill too, or a drag that ended here would leave the
+    // margin behind a downscaled copy.
+    if (wpBackdropEl !== null && wpBackdropEl.style.backgroundImage !== `url("${full}")`) {
+      wpBackdropEl.style.backgroundImage = `url("${full}")`
+    }
   }
 }
 
@@ -2052,7 +2265,7 @@ export function watchWallpaperDragQuality(): () => void {
 }
 
 // ── Wallpaper brightness verdict ─────────────────────────────────────────────
-// Image/video wallpapers get the same one-shot brightness verdict generated
+// Image wallpapers get the same one-shot brightness verdict generated
 // backgrounds analyze from their captured frame: decoded once per URL (cached),
 // it drives the label direction and the auto scheme, so a light wallpaper gets
 // dark fonts even when no theme color is picked and the host preference is dark.
@@ -2061,7 +2274,7 @@ let verdictListener: (() => void) | null = null
 // Monotonic guard for the async frame analysis: a stale result (the wallpaper
 // changed while the frame was decoding) must never overwrite the current
 // verdict. applyGeneratedBg guards with its own controller comparison; the
-// image/video path needs the same protection.
+// image path needs the same protection.
 let verdictGen = 0
 
 /** Register a callback fired when the background brightness verdict CHANGES
@@ -2090,12 +2303,25 @@ function updateWpVerdict(url: string | null): void {
   })
 }
 
+/** Paint (or drop) the ambient margin fill for the given picture and mode. */
+function applyWpBackdrop(url: string, mode: string): void {
+  if (!modeLeavesMargin(mode)) {
+    clearBackdropEl()
+    return
+  }
+  const el = ensureBackdropEl()
+  const next = `url("${url}")`
+  if (el.style.backgroundImage !== next) el.style.backgroundImage = next
+  el.style.filter = `blur(${BACKDROP_BLUR_PX}px)`
+  el.style.opacity = String(rWop())
+}
+
 function applyImageWp(url: string): void {
   clearDynamicBg()
-  clearVideoEl()
   ensureWpContainer()
   const bg = rBgState()
   const mode = rBgMode()
+  applyWpBackdrop(url, mode)
   const next = `url("${url}")`
   // Skip re-setting the same data URL — re-decoding it flashes the wallpaper
   // blank for a frame on boot re-applies.
@@ -2141,95 +2367,193 @@ function applyImageWp(url: string): void {
       if (w > 0 && h > 0) {
         wpEl.style.backgroundSize = `${w}px ${h}px`
         wpEl.style.backgroundPosition = 'center'
+        // The picture box just changed size, so the fade stops moved with it.
+        refreshEdgeFade()
       }
     })
   }
   // Precompute the drag-time downscaled copy now so the first drag swaps without
   // a decode hitch (the original is already loaded, so this hits the cache).
   captureLowRes(url, () => undefined)
+  applyWpEdgeFade(mode, url)
+  // A fresh image has no intrinsic size in bgState yet, so the contain-fit box
+  // cannot be computed above; redo the fade once the decode lands.
+  if (mode === 'fit' && bg.iw <= 0) imageNatSize(url, () => refreshEdgeFade())
   applyWpEffects()
   updateWpVerdict(url)
 }
 
-/** Video wallpaper: a muted looping <video> inside the wallpaper layer.
- *  Placement modes map onto object-fit (tile has no video equivalent and
- *  falls back to cover). */
-function applyVideoWp(url: string): void {
-  clearDynamicBg()
-  ensureWpContainer()
-  if (wpEl!.style.backgroundImage !== 'none') wpEl!.style.backgroundImage = 'none'
-  if (videoEl === null || !videoEl.isConnected) {
-    videoEl = document.createElement('video')
-    videoEl.muted = true
-    videoEl.loop = true
-    videoEl.autoplay = true
-    videoEl.playsInline = true
-    videoEl.preload = 'auto'
-    videoEl.setAttribute('playsinline', '')
-    videoEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-position:center;'
-    // Attach before loading so the element is in the document when play()
-    // resolves; a detached video can defer its first rendered frame.
-    wpEl!.appendChild(videoEl)
-    videoEl.setAttribute('src', url)
-    void videoEl.play().catch(() => undefined)
-  } else if (videoEl.getAttribute('src') !== url) {
-    // Compare the attribute, not videoEl.src: the property getter resolves to
-    // an absolute URL that would never match the relative serve URL and would
-    // restart playback on every re-apply.
-    videoEl.setAttribute('src', url)
-    void videoEl.play().catch(() => undefined)
-  }
+/** Dual mode splits the viewport down the absolute centre: each lane is exactly
+ *  half the window, so neither picture can claim more wall than the other. */
+const DUAL_LANE_FRACTION = 0.5
+/** Widened past the seam so a `center`-mode picture wider than its lane still
+ *  reaches the split instead of leaving a bare band at the centre line. Applied
+ *  to both lanes' seam side, which keeps the split at the absolute centre. */
+const DUAL_LANE_OVERHANG_PX = 8
+
+/** Place one picture inside one lane, in its own half of the viewport.
+ *
+ *  `fit` and `center` are framed to the LANE's box on purpose, not to the
+ *  viewport: a picture contain-fitted to the whole window and then clipped to
+ *  half would have its right part cut away behind the centre line. Position is
+ *  always the lane's own centre — the editor's committed framing is a point on
+ *  the whole viewport (`bgState.x/y` mean 0.5 = the centre of the window), and
+ *  applying it inside a half-wide box pushes the picture off its own lane, so
+ *  dual mode leaves framing to the lane. The editor is opened on the active
+ *  picture, which stays visible in both single and dual mode. */
+function applyDualLane(el: HTMLDivElement, url: string): void {
+  const laneW = el.offsetWidth || Math.round(window.innerWidth * DUAL_LANE_FRACTION)
+  const laneH = window.innerHeight
+  const next = `url("${url}")`
+  // Same guard as the whole-viewport layer: re-setting an identical data URL
+  // re-decodes it and flashes the pane blank on a re-apply.
+  if (el.style.backgroundImage !== next) el.style.backgroundImage = next
+  el.style.maskImage = ''
+  el.style.webkitMaskImage = ''
+  el.style.backgroundRepeat = 'no-repeat'
+  el.style.backgroundPosition = 'center'
   const mode = rBgMode()
-  const bg = rVideoBgState()
-  if (mode === 'fit' && bg.iw > 0) {
-    // Editor-committed box at contain-fit scale × zoom, centered on the
-    // fractional point; object-fit:fill stretches the frame into the box
-    // (same aspect ratio, so nothing distorts).
-    const fit = Math.min(window.innerWidth / bg.iw, window.innerHeight / bg.ih)
-    const w = bg.iw * fit * bg.zoom
-    const h = bg.ih * fit * bg.zoom
-    videoEl.style.cssText = `position:absolute;left:${bg.x * window.innerWidth - w / 2}px;top:${bg.y * window.innerHeight - h / 2}px;width:${w}px;height:${h}px;object-fit:fill;`
+  const nat = natSizeOf(url) ?? undefined
+  if (mode === 'fill') {
+    el.style.backgroundSize = 'cover'
+    el.style.backgroundPosition = 'center'
+  } else if (mode === 'stretch') {
+    el.style.backgroundSize = '100% 100%'
+    el.style.backgroundPosition = 'center'
+  } else if (mode === 'tile') {
+    el.style.backgroundRepeat = 'repeat'
+    el.style.backgroundSize = 'auto'
+    el.style.backgroundPosition = '0px 0px'
+  } else if (nat !== undefined && nat.w > 0 && nat.h > 0) {
+    // Picture box in the lane's own coordinates (the lane is a viewport-sized
+    // box, so px stops mean what they mean on the single-picture layer).
+    let picW: number
+    let picH: number
+    if (mode === 'center') {
+      picW = nat.w
+      picH = nat.h
+    } else {
+      const fit = Math.min(laneW / nat.w, laneH / nat.h)
+      picW = nat.w * fit
+      picH = nat.h * fit
+    }
+    el.style.backgroundSize = `${picW}px ${picH}px`
+    el.style.backgroundPosition = 'center'
+    // Feather the picture's own border into what is behind it. Both lanes get
+    // the identical treatment — the slider reads as a share of the picture and
+    // the box is computed the same way on both sides, so neither lane can end
+    // up faded while the other stays hard-edged.
+    const pct = rEdgeFade()
+    if (pct > 0) {
+      // Same px-stop recipe as the single-picture layer (see `applyWpEdgeFade`):
+      // a gradient mask has no intrinsic size, so it cannot borrow
+      // `background-size` and the stops must be spelled out in px.
+      const short = Math.min(picW, picH)
+      const f = Math.max(1, Math.min((short * pct) / 100, short / 3))
+      // A picture wider than its lane overhangs the seam, which puts its left
+      // stop at a negative px; a gradient clamps those, so start the ramp at the
+      // lane edge instead of letting the negative stop silently do nothing.
+      const x0 = Math.max(0, (laneW - picW) / 2)
+      const y0 = Math.max(0, (laneH - picH) / 2)
+      const x1 = x0 + Math.min(picW, laneW)
+      const y1 = y0 + Math.min(picH, laneH)
+      const mask =
+        `linear-gradient(to right, transparent ${x0}px, #000 ${x0 + f}px, #000 ${x1 - f}px, transparent ${x1}px), ` +
+        `linear-gradient(to bottom, transparent ${y0}px, #000 ${y0 + f}px, #000 ${y1 - f}px, transparent ${y1}px)`
+      el.style.maskImage = mask
+      el.style.webkitMaskImage = mask
+      el.style.maskRepeat = 'no-repeat'
+      el.style.webkitMaskRepeat = 'no-repeat'
+      if (typeof CSS !== 'undefined' && CSS.supports?.('mask-composite', 'intersect') === true) {
+        el.style.maskComposite = 'intersect'
+      } else {
+        el.style.webkitMaskComposite = 'source-in'
+      }
+    }
   } else {
-    videoEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-position:center;'
-    videoEl.style.objectFit = mode === 'stretch' ? 'fill' : (mode === 'fill' || mode === 'tile') ? 'cover' : 'contain'
+    // Intrinsic size not measured yet (a freshly rotated picture). `contain` on
+    // the lane's own box is the same placeholder the single-picture layer uses,
+    // and it is resolved against the LANE, so both lanes stay half the window
+    // even in this one transient frame. The decode callback re-runs this with
+    // the exact ratio box.
+    el.style.backgroundSize = mode === 'center' || mode === 'fit' ? 'contain' : el.style.backgroundSize
   }
-  applyWpEffects()
-  // Video mode has no still Image-decodable source; the captured frame
-  // snapshot stands in for the brightness verdict (null until it lands, then
-  // re-analyzed through the next apply).
-  updateWpVerdict(rWp())
 }
 
-function applyWpEffects(): void {
+function applyDualWp(leftUrl: string | null, rightUrl: string | null): void {
+  if (leftUrl === null || rightUrl === null) {
+    clearWpLeftEl()
+    clearWpRightEl()
+    return
+  }
+  const el = ensureWpLeftEl()
+  // The pair is an exact 50/50 split at the window's absolute centre: both lanes
+  // carry the SAME pixel width, so an odd viewport width cannot leave one lane a
+  // pixel wider than the other.
+  //
+  // The overhang only earns its keep in `center` mode, where a picture wider than
+  // its lane must still reach the split. In `fit` the picture is contained inside
+  // the lane by construction, so the lanes stay exactly adjacent: an overhang
+  // there would make them overlap at the seam, and whichever lane painted second
+  // would win the 8 px strip — one picture visibly encroaching on the other,
+  // which is the asymmetry this mode exists to avoid. While feathered the seam is
+  // a ramp on both sides, so overlapping it would also double-darken the ramp.
+  const overhang = rBgMode() === 'center' ? DUAL_LANE_OVERHANG_PX : 0
+  const laneW = Math.floor(window.innerWidth * DUAL_LANE_FRACTION) + overhang
+  const right = ensureWpRightEl()
+  const lanes: Array<[HTMLDivElement, 'left' | 'right', string | null]> =
+    [[el, 'left', leftUrl], [right, 'right', rightUrl]]
+  for (const [node, side, url] of lanes) {
+    if (url === null) continue
+    if (side === 'left') {
+      node.style.left = `${-overhang / 2}px`
+      node.style.right = ''
+    } else {
+      node.style.left = ''
+      node.style.right = `${-overhang / 2}px`
+    }
+    node.style.width = `${laneW}px`
+    applyDualLane(node, url)
+    node.style.opacity = String(rWop())
+    const blur = rBl()
+    node.style.filter = blur > 0 ? `blur(${blur}px)` : 'none'
+  }
+  // Both intrinsic sizes are needed for the `fit`/`center` boxes and their
+  // masks, and a rotation swaps both URLs at once, so ask for whichever of the
+  // two is not the active one and re-run once it lands.
+  for (const url of [leftUrl, rightUrl]) {
+    if (imgNat === null || imgNat.url !== url) {
+      imageNatSize(url, () => {
+        if (el.isConnected && el.style.backgroundImage === `url("${leftUrl}")`) {
+          applyDualWp(rWpImage(), rWpImageRight())
+        }
+      })
+    }
+  }
+}
+
+/** `object-position` for the letterboxed frame, from the operator's alignment
+ *  offset. The stored value is an offset from centre in percent (-50..50);
+ *  `object-position` wants an absolute share of the slack (0..100%), so 50 is
+ *  added back. The normalizer on both halves already clamped the input, so this
+ *  cannot leave 0..100%. */function applyWpEffects(): void {
   if (!wpEl) return
   const blur = rBl()
   wpEl.style.filter = blur > 0 ? `blur(${blur}px)` : 'none'
   wpEl.style.opacity = String(rWop())
+  if (wpBackdropEl !== null) {
+    // The ambient fill always stays softer than the picture above it, so the
+    // user's blur reads as an increase in depth rather than a flat wash.
+    wpBackdropEl.style.filter = `blur(${BACKDROP_BLUR_PX + blur}px)`
+    wpBackdropEl.style.opacity = String(rWop())
+  }
 }
 
 export function applyWp(): void {
   const url = rWp()
-  if (cfg.backgroundType === 'video') {
-    // The frame snapshot (rWp's video branch) is preview-only; the layer plays
-    // the video from its own slot.
-    const vurl = rWpVideo()
-    if (vurl) {
-      applyVideoWp(vurl)
-    } else {
-      clearDynamicBg()
-      clearVideoEl()
-      wpEl?.remove(); wpEl = null
-      // An empty video slot must not keep the previous wallpaper's brightness
-      // verdict alive: nothing is on screen to justify it, and a stale verdict
-      // would flip the next background's font direction the wrong way. The
-      // no-background branch below does the same.
-      wpVerdict = null
-      setBgDark(null)
-    }
-  } else if (cfg.backgroundType !== 'image' && cfg.generatedBg) {
+  if (cfg.backgroundType !== 'image' && cfg.generatedBg) {
     // Recreate the live canvas from saved params if one is not active yet
     // (boot or after import).
-    clearVideoEl()
     if (!wpController) {
       applyGeneratedBg(cfg.generatedBg)
       return
@@ -2239,11 +2563,24 @@ export function applyWp(): void {
     applyWpEffects()
   } else if (url) {
     applyImageWp(url)
+    // Dual mode replaces the single-picture presentation: the whole-viewport
+    // layer hands the wall over to the two half-viewport lanes, so the padding
+    // fill underneath both leaves its own copy of the left picture there. On its
+    // own (single picture or a manual upload) the one layer is the whole wall,
+    // and a manual image has no right URL, so dual mode simply stays off.
+    const right = rWpImageRight()
+    if (right === null) {
+      applyDualWp(null, null)
+    } else {
+      wpEl!.style.visibility = 'hidden'
+      applyDualWp(url, right)
+    }
   } else {
     // No background: tear down the layer but keep tokens/blur intact.
     clearDynamicBg()
-    clearVideoEl()
     wpEl?.remove(); wpEl = null
+    clearBackdropEl()
+    clearWpRightEl()
     wpVerdict = null
     setBgDark(null)
   }
@@ -2277,12 +2614,12 @@ export function applyWp(): void {
 
 export function teardownWp(): void {
   clearDynamicBg()
-  clearVideoEl()
-  disposeVideoObjectUrl()
   setBgDark(null)
   wpVerdict = null
   wpEl?.remove(); wpEl = null
-  clearCustomTokens()
+  clearBackdropEl()
+  clearWpLeftEl()
+  clearWpRightEl()
   tokenStyleEl?.remove(); tokenStyleEl = null
   removeViewCards()
   document.body.removeAttribute('data-ds-dark-theme')
@@ -2336,9 +2673,21 @@ export function teardownWp(): void {
 /** Live wallpaper-opacity updates during slider drag (no full re-apply). */
 export function setWpOpacity(v: number): void {
   if (wpEl) wpEl.style.opacity = String(v)
+  if (wpBackdropEl) wpBackdropEl.style.opacity = String(v)
+  // Both lanes share the slider, or dual mode's right pane would stay at full
+  // strength while the left faded out.
+  if (wpRightEl) wpRightEl.style.opacity = String(v)
 }
 
 /** Live wallpaper-blur updates during slider drag (no full re-apply). */
 export function setWpBlur(v: number): void {
   if (wpEl) wpEl.style.filter = v > 0 ? `blur(${v}px)` : 'none'
+  if (wpBackdropEl) wpBackdropEl.style.filter = `blur(${BACKDROP_BLUR_PX + v}px)`
+  if (wpRightEl) wpRightEl.style.filter = v > 0 ? `blur(${v}px)` : 'none'
+}
+
+/** Live edge-feather updates during slider drag (no full re-apply). Reads the
+ *  value back out of cfg, since the mask geometry depends on it. */
+export function setWpEdgeFade(): void {
+  refreshEdgeFade()
 }
