@@ -11,16 +11,16 @@
     "wallpaper",
     "web-ui"
   ],
-  "homepage": "https://github.com/Tkingxiao/dsh-any-background#readme",
+  "homepage": "https://github.com/lilcandi/dsh-any-background#readme",
   "bugs": {
-    "url": "https://github.com/Tkingxiao/dsh-any-background/issues"
+    "url": "https://github.com/lilcandi/dsh-any-background/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Tkingxiao/dsh-any-background.git"
+    "url": "git+https://github.com/lilcandi/dsh-any-background.git"
   },
   "license": "MIT",
-  "author": "Tkingxiao",
+  "author": "Tkingxiao (original); lilcandi (fork maintainer)",
   "type": "module",
   "engines": {
     "dsh": "0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.6-alpha.1 || 0.1.6-alpha.2 || 0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2"

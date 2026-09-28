@@ -3,6 +3,7 @@ dsh-any-background 安装说明
 
 版本：0.4.2
 适用：DSH 0.1.5-rc.2 ~ 0.1.7-rc.2
+来源：fork 自 Tkingxiao/dsh-any-background（MIT），v0.4.0 起的改动为本 fork 所作
 
 
 一、这个插件是什么

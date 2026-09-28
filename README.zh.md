@@ -3,14 +3,16 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm 版本" src="https://img.shields.io/npm/v/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm 月下载量" src="https://img.shields.io/npm/dm/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://github.com/Tkingxiao/dsh-any-background/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.2 ~ 0.1.7-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.1.7--rc.1-4d6bfe" /></a>
   <a href="https://github.com/topics/dsh-better-sidebar"><img alt="插件生态：GitHub topic dsh-better-sidebar" src="https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E7%94%9F%E6%80%81-topic%20dsh--better--sidebar-4d6bfe" /></a><br /><br />
-  <a href="https://github.com/Tkingxiao/dsh-any-background"><img src="https://img.shields.io/github/stars/Tkingxiao/dsh-any-background?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background?style=social" alt="GitHub stars"></a>
   <a href="https://dsh.directory/plugins/tkingxiao/dsh-any-background"><img src="https://dsh.directory/badges/listed.svg" alt="dsh.directory listed"></a>
 </p>
 
 [English](README.md) | 中文
+
+> **这是一个 fork。** 修改自 [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)（MIT）。原项目是上游作者的原创作品；**从 v0.4.0 起的全部改动**——后来被删除的视频轮播、v0.4.2 的左右双图轮播、以及双文件夹轮播来源——均为本 fork 自己的实现。上游仓库：[github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)。
 
 一个 **DeepSeek Harness** 外观插件：自定义主题色、背景壁纸（图片 / 算法动态生成），以及逐表面的透明度与模糊度控制。兼容 **DSH 0.1.5-rc.2 ~ 0.1.7-rc.1**（官方右侧栏「主题」卡片等界面按宿主是否提供右侧栏注册表扩展点自动启用，缺失时静默跳过）。
 
@@ -154,7 +156,7 @@
 dsh plugin --profile web add dsh-any-background
 
 # 或直接安装 GitHub 仓库
-dsh plugin --profile web add github:Tkingxiao/dsh-any-background
+dsh plugin --profile web add github:lilcandi/dsh-any-background
 ```
 
 然后启动：
@@ -177,7 +179,7 @@ npx @deepseek-ai/dsh web
 `lib/` 目录已提交，安装后无需构建。修改 `src/` 后重新构建：
 
 ```sh
-git clone https://github.com/Tkingxiao/dsh-any-background.git
+git clone https://github.com/lilcandi/dsh-any-background.git
 cd dsh-any-background
 pnpm install
 pnpm run bundle
@@ -205,7 +207,7 @@ pnpm dsh web
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Tkingxiao/dsh-any-background&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=Tkingxiao%2Fdsh-any-background&type=timeline&legend=bottom-right)
+[![Star History Chart](https://api.star-history.com/chart?repos=lilcandi/dsh-any-background&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=lilcandi%2Fdsh-any-background&type=timeline&legend=bottom-right)
 
 ## 许可
 

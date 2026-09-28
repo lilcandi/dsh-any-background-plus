@@ -3,14 +3,16 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm monthly downloads" src="https://img.shields.io/npm/dm/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://github.com/Tkingxiao/dsh-any-background/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.1.5-rc.2 ~ 0.1.7-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.1.7--rc.1-4d6bfe" /></a>
   <a href="https://github.com/topics/dsh-better-sidebar"><img alt="Plugin ecosystem: GitHub topic dsh-better-sidebar" src="https://img.shields.io/badge/plugin%20ecosystem-topic%20dsh--better--sidebar-4d6bfe" /></a><br /><br />
-  <a href="https://github.com/Tkingxiao/dsh-any-background"><img src="https://img.shields.io/github/stars/Tkingxiao/dsh-any-background?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background?style=social" alt="GitHub stars"></a>
   <a href="https://dsh.directory/plugins/tkingxiao/dsh-any-background"><img src="https://dsh.directory/badges/listed.svg" alt="dsh.directory listed"></a>
 </p>
 
 English | [中文](README.zh.md)
+
+> **This is a fork.** It is modified from [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background) (MIT). The upstream project is the original work; everything from **v0.4.0 onward** — the video rotation that was later removed, the dual-lane wallpaper of v0.4.2 and the two-folder rotation source — is this fork's own work. Upstream: [github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background).
 
 A **DeepSeek Harness** appearance plugin: custom theme color, background wallpaper (image / algorithmically generated), and fine-grained per-surface opacity & blur controls. Compatible with **DSH 0.1.5-rc.2 ~ 0.1.7-rc.1** (official-Sidebar UI such as the "Theme" card enables itself where the host exposes the Sidebar registry extension point, and is skipped silently where it does not).
 
@@ -155,7 +157,7 @@ A **DeepSeek Harness** appearance plugin: custom theme color, background wallpap
 dsh plugin --profile web add dsh-any-background
 
 # or straight from the GitHub repository
-dsh plugin --profile web add github:Tkingxiao/dsh-any-background
+dsh plugin --profile web add github:lilcandi/dsh-any-background
 ```
 
 Then launch:
@@ -178,7 +180,7 @@ npx @deepseek-ai/dsh web
 The `lib/` directory is committed, so installs need no build step. To rebuild after editing `src/`:
 
 ```sh
-git clone https://github.com/Tkingxiao/dsh-any-background.git
+git clone https://github.com/lilcandi/dsh-any-background.git
 cd dsh-any-background
 pnpm install
 pnpm run bundle
@@ -206,7 +208,7 @@ pnpm dsh web
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Tkingxiao/dsh-any-background&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=Tkingxiao%2Fdsh-any-background&type=timeline&legend=bottom-right)
+[![Star History Chart](https://api.star-history.com/chart?repos=lilcandi/dsh-any-background&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=lilcandi%2Fdsh-any-background&type=timeline&legend=bottom-right)
 
 ## License
 
