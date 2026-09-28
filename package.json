@@ -11,13 +11,13 @@
     "wallpaper",
     "web-ui"
   ],
-  "homepage": "https://github.com/lilcandi/dsh-any-background#readme",
+  "homepage": "https://github.com/lilcandi/dsh-any-background-plus#readme",
   "bugs": {
-    "url": "https://github.com/lilcandi/dsh-any-background/issues"
+    "url": "https://github.com/lilcandi/dsh-any-background-plus/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lilcandi/dsh-any-background.git"
+    "url": "git+https://github.com/lilcandi/dsh-any-background-plus.git"
   },
   "license": "MIT",
   "author": "Tkingxiao (original); lilcandi (fork maintainer)",

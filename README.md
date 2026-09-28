@@ -3,10 +3,10 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm monthly downloads" src="https://img.shields.io/npm/dm/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://github.com/lilcandi/dsh-any-background/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.1.5-rc.2 ~ 0.1.7-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.1.7--rc.1-4d6bfe" /></a>
   <a href="https://github.com/topics/dsh-better-sidebar"><img alt="Plugin ecosystem: GitHub topic dsh-better-sidebar" src="https://img.shields.io/badge/plugin%20ecosystem-topic%20dsh--better--sidebar-4d6bfe" /></a><br /><br />
-  <a href="https://github.com/lilcandi/dsh-any-background"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social" alt="GitHub stars"></a>
   <a href="https://dsh.directory/plugins/tkingxiao/dsh-any-background"><img src="https://dsh.directory/badges/listed.svg" alt="dsh.directory listed"></a>
 </p>
 
@@ -157,7 +157,7 @@ A **DeepSeek Harness** appearance plugin: custom theme color, background wallpap
 dsh plugin --profile web add dsh-any-background
 
 # or straight from the GitHub repository
-dsh plugin --profile web add github:lilcandi/dsh-any-background
+dsh plugin --profile web add github:lilcandi/dsh-any-background-plus
 ```
 
 Then launch:
@@ -180,7 +180,7 @@ npx @deepseek-ai/dsh web
 The `lib/` directory is committed, so installs need no build step. To rebuild after editing `src/`:
 
 ```sh
-git clone https://github.com/lilcandi/dsh-any-background.git
+git clone https://github.com/lilcandi/dsh-any-background-plus.git
 cd dsh-any-background
 pnpm install
 pnpm run bundle
@@ -208,7 +208,7 @@ pnpm dsh web
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=lilcandi/dsh-any-background&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=lilcandi%2Fdsh-any-background&type=timeline&legend=bottom-right)
+[![Star History Chart](https://api.star-history.com/chart?repos=lilcandi/dsh-any-background-plus&type=timeline&legend=bottom-right&sealed_token=f5MhnHibC049CC0Ed_nZX8rYpIq2wPTdTXUsPPafAiYxYKOeqyKyMFirxKppeLNJygxv1iw2BlsnCYOWgu9zN6ffr7kJlAG1SlRoQRmQivCIkPzZ2lhSBQ)](https://www.star-history.com/?repos=lilcandi%2Fdsh-any-background&type=timeline&legend=bottom-right)
 
 ## License
 
