@@ -48,6 +48,12 @@ export const SUPPORTED_RELEASES: readonly SupportedRelease[] = [
   // rather than switching to `position:fixed`). `panelFragments` therefore stays
   // empty on this row too.
   { channel: '0.1.7-alpha', release: '0.1.7-rc.2' },
+  // Added after diffing the 0.2.0-rc.1 packages on disk: the gate only reads
+  // `peerDependencies` entries named `@deepseek-ai/dsh` or `@deepseek-ai/dsh-*`,
+  // and all seven `dsh-*` peers still ship at 0.2.0-rc.1 with the same contracts
+  // (`ThemeRuntime` and `SidebarRightTabRegistry` unchanged). So this build needs
+  // no new adapter and joins the folder whose facts held.
+  { channel: '0.1.7-alpha', release: '0.2.0-rc.1' },
 ]
 
 /** How the chosen adapter relates to the release that was detected. Reported so a
