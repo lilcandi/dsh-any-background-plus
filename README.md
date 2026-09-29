@@ -1,65 +1,61 @@
-# dsh-any-background
+# dsh-any-background-plus
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm monthly downloads" src="https://img.shields.io/npm/dm/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.1.5-rc.2 ~ 0.1.7-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.1.7--rc.1-4d6bfe" /></a>
-  <a href="https://github.com/topics/dsh-better-sidebar"><img alt="Plugin ecosystem: GitHub topic dsh-better-sidebar" src="https://img.shields.io/badge/plugin%20ecosystem-topic%20dsh--better--sidebar-4d6bfe" /></a><br /><br />
-  <a href="https://github.com/lilcandi/dsh-any-background-plus"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social" alt="GitHub stars"></a>
-  <a href="https://dsh.directory/plugins/tkingxiao/dsh-any-background"><img src="https://dsh.directory/badges/listed.svg" alt="dsh.directory listed"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus"><img alt="GitHub stars" src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-4d6bfe"></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.1.5-rc.2 ~ 0.2.0-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.2.0--rc.1-4d6bfe" /></a>
+  <a href="https://github.com/topics/dsh-plugin"><img alt="Plugin ecosystem: GitHub topic dsh-plugin" src="https://img.shields.io/badge/plugin%20ecosystem-topic%20dsh--plugin-4d6bfe" /></a>
 </p>
 
 English | [中文](README.zh.md)
 
-> **This is a fork.** It is modified from [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background) (MIT). The upstream project is the original work; everything from **v0.4.0 onward** — the video rotation that was later removed, the dual-lane wallpaper of v0.4.2 and the two-folder rotation source — is this fork's own work. Upstream: [github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background).
+> **This is a fork, and this half of it is mine.** Modified from [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background) (MIT), which built the colour wheel, the per-surface opacity/blur system, the generated backgrounds and the rotation engine. **Everything from v0.4.0 onward is this fork's own work** — see [What this fork adds](#what-this-fork-adds) below. Upstream: [github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background).
 
-A **DeepSeek Harness** appearance plugin: custom theme color, background wallpaper (image / algorithmically generated), and fine-grained per-surface opacity & blur controls. Compatible with **DSH 0.1.5-rc.2 ~ 0.1.7-rc.1** (official-Sidebar UI such as the "Theme" card enables itself where the host exposes the Sidebar registry extension point, and is skipped silently where it does not).
+A **DeepSeek Harness** appearance plugin: custom theme colour, background wallpaper (image / algorithmically generated), and fine-grained per-surface opacity & blur controls — plus this fork's **dual-lane wallpaper**, **two-folder rotation** and a **floating rotate-now orb with a live countdown ring**. Compatible with **DSH 0.1.5-rc.2 ~ 0.2.0-rc.1**.
+
+---
+
+## What this fork adds
+
+These are the features I built on top of upstream. They are the reason this fork exists.
+
+- **Dual-lane wallpaper — two pictures, left and right.** A single `dual` toggle paints **two different pictures of the same rotation at once**, one down each side of the viewport, clear of the centre column. The motivation is geometric rather than decorative: the wallpaper is painted *behind* the whole app while the host's conversation column sits on top of the middle, so a picture whose subject is dead centre has that subject exactly where it cannot be seen. Two lanes hug the edges instead, and the picture that used to be half-hidden becomes the one you actually look at. Off by default.
+- **One rotation advanced twice — never a second rotation.** Both lanes come from **one step of one rotation**: the left index is drawn with the existing `pickRotationIndex()` (same shuffle/order semantics, same "never repeat the current picture"), and the right index is taken from `nextLaneIndex()`, which steps *forward from the left one*. Stepping rather than drawing again is deliberate — the shuffle RNG is unseeded, so two independent draws would occasionally collide and paint the same picture twice, which is precisely what dual mode exists to avoid. In `order` mode the pair is simply adjacent pictures. The pair is persisted as `laneItems`, so it survives a reload and cannot drift apart.
+- **A third rotation source: one folder per side.** The rotation can read a **different directory for each lane**, each listed and advanced in place. The cadence and the mode stay **shared** — the point is two sources, not two rotations — so the left and right cursors are kept separately: the left one is the stored `current`, the right one is recovered by looking up the name the right lane is already showing in its own listing. That matters as soon as the two directories differ in length, because a single shared index would walk the shorter listing off its end. Only once **both** directories exist does the wall change; picking just one stores it without previewing, so the wall is never left half split with a stale lane on the other side. The single-folder mode is still there — the pair is a third source, not a replacement.
+- **The split is the window's absolute centre, and the lanes are equal by construction.** `wpLeftEl` and `wpRightEl` are **peer** `position:fixed; width:50%; z-index:-1` elements, one pinned to each edge, and both are given the **same pixel width** — `Math.floor(innerWidth * 0.5)` — so an odd viewport width cannot leave one lane a pixel wider than the other. The overhang that lets a picture reach the seam is applied **only in `center` mode**: in `fit` the picture is contained inside its lane by construction, so an overhang there would make the two lanes overlap at the seam and whichever painted second would win the strip — one picture visibly encroaching on the other, which is the asymmetry this mode exists to prevent.
+- **Each picture's intrinsic size is measured separately.** The lane geometry needs both pictures' real dimensions before either can be laid out, and a single-slot measurement cache cannot supply that — whichever lane ran second would claim the cache and push the first into the proportional fallback, painting one picture to its box and the other to its ratio. That is the exact "one picture bigger than the other" split dual mode exists to avoid, so the sizes are held in a small per-URL map with a synchronous lookup.
+- **Edge feathering applies to both lanes, identically.** The slider is read as a share of each picture, the ramp is computed with the same px-stop recipe against the same box, and it is applied unconditionally — a lane is never skipped for being wider than its box. Both lanes are therefore feathered symmetrically and neither can end up faded while the other stays hard-edged.
+- **The settings preview mirrors the split.** The hero image on the theme panel is drawn as the same 50/50 grid, with the right lane's picture beside the left one, so the preview shows what the wall will actually look like rather than a single centred picture. The right URL travels through the theme store rather than being read from the module-level image state, because a React surface reading that state directly would miss rotation updates.
+- **Floating rotate-now orb with a countdown ring.** A round button is pinned to the **bottom-right of the viewport**, reachable without opening any panel, with a live ring drawn around it showing how long until the next swap. The ring only appears for the **`minutes` cadence** — that is the only interval whose remaining time is knowable in the browser (`reload` is due on every read, `daily`/`weekly` are settled by the node half as the page loads, and a disabled rotation never falls due at all), so for those the button is drawn alone rather than showing a ring that would always read "full" and be a lie. Clicking advances the rotation, and because the advance stamps `lastRotate` the ring refills by itself. It is mounted as its own React root that portals to `<html>`, so neither the settings dialog's scroll column nor a host transform can clip it.
+- **The video feature is gone, as code.** Every video endpoint, route, upload handler, mime table, filename whitelist, folder scanner, per-element playback layer and its settings were **deleted, not hidden** — `BackgroundType` no longer carries `'video'`, the rotation no longer carries `media` / `videoFolder` / `videoName` / `videoVolume` / `videoAlign` / `ended`, and the whole `src/client/utils/video.ts` module is removed. A stored config that still names a video rotation falls back to images on normalize.
+- **DSH 0.2.0-rc.1 support.** The host now gates a plugin on its `peerDependencies` before importing a single module, so the seven `@deepseek-ai/dsh-*` peers, `engines.dsh` and `dsh.compatibility.dshReleases` all name **nine releases** through `0.2.0-rc.1`, and the release table gained a matching row. Diffing the 0.2.0-rc.1 packages showed `ThemeRuntime` and `SidebarRightTabRegistry` unchanged, so this build needs **no new adapter folder** — it joins the folder whose facts held.
 
 ---
 
 ## Screenshots
 
 <p align="center">
-  <img src="example_img/image.png" alt="Custom homepage" width="720">
+  <img src="example_img/shot-dual.png" alt="Dual-lane wallpaper: two pictures, left and right" width="720">
   <br/>
-  <em>Custom homepage · wallpaper + theme color applied</em>
+  <em>Dual-lane wallpaper · two different pictures of one rotation, split at the window's absolute centre, clear of the conversation column</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-2.png" alt="Theme color picker" width="720">
+  <img src="example_img/shot-panel.png" alt="Theme settings panel" width="720">
   <br/>
-  <em>Theme color picker · PS-style wheel + precise HSL/RGB inputs</em>
+  <em>Theme settings panel · colour, interface, font, background and profiles in one place</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-3.png" alt="Per-part opacity and blur" width="720">
+  <img src="example_img/shot-color.png" alt="Theme colour and per-surface opacity" width="720">
   <br/>
-  <em>Per-part opacity and blur · main background, sidebar, cards, settings</em>
+  <em>Theme colour and per-surface opacity · PS-style wheel, smart extraction, per-surface sliders</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-4.png" alt="Background editor" width="720">
+  <img src="example_img/shot-orb.png" alt="Floating rotate-now orb with countdown ring" width="720">
   <br/>
-  <em>Background editor · image wallpapers support drag-to-pan and scroll-to-zoom</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-6.png" alt="Generated dynamic background" width="720">
-  <br/>
-  <em>Generated dynamic background · mesh gradient / Shader / geometric presets</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-9.png" alt="Geometric background, low-poly mode" width="720">
-  <br/>
-  <em>Generated dynamic background · geometric low-poly mode preview</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-10.png" alt="Config export and import" width="720">
-  <br/>
-  <em>Export and import configs to share</em>
+  <em>Rotate-now orb · bottom-right, always reachable, with a countdown ring on the minutes cadence</em>
 </p>
 
 ## Features

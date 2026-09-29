@@ -139,3 +139,8 @@ export const PauseIcon = ({ size, className }: { size?: number; className?: stri
   <Glyph size={size} className={className}><path d="M5.4 3.4v9.2M10.6 3.4v9.2" /></Glyph>
 )
 
+/** Circular arrow pair: "advance the rotation now". */
+export const RotateIcon = ({ size, className }: { size?: number; className?: string }) => (
+  <Glyph size={size} className={className}><path d="M13.1 5.4A5.9 5.9 0 1 0 13.4 9.6" /><path d="M13.6 2.4v3.2h-3.2" /></Glyph>
+)
+

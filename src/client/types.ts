@@ -411,6 +411,10 @@ export interface BoundActions {
   syncBg: (url: string | null, rev: number, backgroundType?: BackgroundType, generatedBg?: GeneratedBgParams | null, bgRev?: number, regenerateOnReload?: boolean, urlRight?: string | null) => void
   syncColor: (hsv: [number, number, number], rev: number) => void
   syncMeta: (profiles: ProfileEntry[], rotation: RotationConfig, schedule: ScheduleConfig, schemeOverride: SchemeOverride, activeProfile: string | null, rev: number) => void
+  /** Advance the rotation one step right now (the settings page's 「立即切换」
+   *  button and the floating orb both go through this). Bound by the store, so
+   *  it is only present once a surface has been injected — read it lazily. */
+  rotateNow?: () => Promise<boolean>
 }
 
 export interface RpcResultLike { ok: boolean; value?: any; error?: any }

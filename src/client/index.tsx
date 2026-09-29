@@ -5,8 +5,10 @@
  * watch, i18n, settings-section injection, boot restore, watchdog. The heavy
  * lifting lives in the sibling modules (state/rpc/wallpaper/utils/components).
  */
+import { createElement, useState, type ReactElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { defineStore } from './runtime'
-import type { Ctx, RpcResultLike, BoundActions, ThemeSectionProps, PartOpacities, PartBlurs, PartStrokes, BackgroundType, GeneratedBgParams, ProfileAppearance, ProfileEntry, RotationItem, ScheduleConfig, SchemeOverride, UploadOutcome, StoreInstance } from './types'
+import type { Ctx, RpcResultLike, BoundActions, ThemeSectionProps, PartOpacities, PartBlurs, PartStrokes, BackgroundType, GeneratedBgParams, ProfileAppearance, ProfileEntry, RotationItem, ScheduleConfig, SchemeOverride, UploadOutcome, StoreInstance, ThemeStoreState } from './types'
 import { NS, zh, en } from './i18n'
 import { cfg, rHasColor, rColor, rWp, rWpImage, rWpImageRight, rBgState, setWpUrl, setWpImageUrl, setWpImageRightUrl, setBgState, adoptConfig, DEFAULT_CONFIG, setBgDark, rBgDark, rProfiles, rRotation, rSchedule, rScheme, rColorScheme, rSchemeOverride, rotGapMs, currentAppearance, applyAppearance } from './state'
 import { RPC_CHANNEL, WALLPAPER_SERVE_URL, WALLPAPER_RIGHT_SERVE_URL, FONT_SERVE_URL, fontServeUrl, folderPickerAvailable, initRpc, saveConfig, flushSave, loadPersisted, persistWallpaper, persistConfig, uploadFont, removeFont as rpcRemoveFont, rotationAdd, rotationRemove, rotationActivate, pickRotationFolder as rpcPickRotationFolder, clearRotationFolder as rpcClearRotationFolder, advanceRotation } from './rpc'
@@ -15,8 +17,10 @@ import { mountStaticStyles } from './host-compat/styles'
 import { genTokens, hslToHsv, hsvToHsl, extractWallpaperColor } from './utils/color'
 import { readImgAsync, makeThumb, blobToDataUrl } from './utils/image'
 import { ThemeSection } from './components/ThemeSection'
+import { RotateOrb } from './components/RotateOrb'
 import { registerThemeSidebarTab } from './sidebar/tab'
 import { registerNativeSidebarTab } from './sidebar/native-tab'
+import { createStoreHook, type ObservableStore } from './sidebar/store-hook'
 import { SUN_PATHS } from './components/icons'
 import { startBetterSidebarWatch } from './env'
 import { startHeaderPopoverTagging } from './header-tag'
@@ -1025,6 +1029,17 @@ export function apply(ctx: Ctx): void {
   registerThemeSidebarTab(ctx, { face: buildFace, store: storeInstance })
   registerNativeSidebarTab(ctx, { face: buildFace, store: storeInstance })
 
+  // 6.2. Floating "switch now" orb, bottom-right of the viewport, with a
+  // countdown ring whenever the cadence is actually countable (`minutes`).
+  // Mounted here rather than inside a host surface because it must outlive the
+  // settings dialog: the point is to reach the button without opening anything.
+  //
+  // It is driven by the same store the settings page reads, so it needs no new
+  // config field: the ring is a pure function of `rotation.lastRotate`, and
+  // clicking goes through the shared `rotateNow()` (which stamps `lastRotate`,
+  // so the ring refills by itself — see the note in RotateOrb).
+  mountRotateOrb(ctx, { store: storeInstance, getActions: () => bound })
+
   // 6.5. Settings-nav icon: the harness derives the nav glyph from the section
   // id (unknown ids fall back to the settings gear) with no plugin hook, so
   // patch the mounted nav cell in place — find the cell whose label matches
@@ -1133,4 +1148,57 @@ export function apply(ctx: Ctx): void {
   const onPageHide = (): void => flushSave()
   window.addEventListener('pagehide', onPageHide)
   ctx.effect(() => () => window.removeEventListener('pagehide', onPageHide), 'dsh-any-background: pagehide flush')
+}
+
+/**
+ * Mounts the floating rotate orb as its own React root (see RotateOrb).
+ *
+ * A separate root rather than a slot: the hook is `createRoot` on a detached
+ * element that the orb's own `Portal` then hoists to `<html>`, which is the only
+ * way to get a viewport-fixed control that neither the settings dialog's scroll
+ * column nor a host transform can clip.
+ *
+ * `getActions` is read lazily on click instead of captured: the actions are only
+ * bound once a surface has been injected (boot sets them too, but a host without
+ * the store module leaves them null forever), and the click happens long after
+ * this runs.
+ */
+function mountRotateOrb(
+  ctx: Ctx,
+  opts: { store: StoreInstance | null; getActions: () => BoundActions | null }
+): void {
+  if (opts.store === null) return
+  const host = document.createElement('div')
+  host.dataset.dshAnyOrbRoot = '1'
+  document.documentElement.appendChild(host)
+  const root = createRoot(host)
+  const t = ctx.locale.bind(NS)
+  const useStore = createStoreHook(opts.store as ObservableStore<ThemeStoreState>)
+
+  const OrbRoot = (): ReactElement => {
+    const rotation = useStore(s => s.rotation)
+    const [busy, setBusy] = useState(false)
+    // `minutes` is the only cadence the browser can count down on its own. The
+    // dated ones are settled by the node half during `read`, and `reload` is
+    // due the moment anything reads — neither has a meaningful "time left".
+    const counts = rotation.enabled && rotation.interval === 'minutes' && rotation.lastRotate !== null
+    const gapMs = rotGapMs(rotation)
+    const dueAt = counts ? new Date(rotation.lastRotate as string).getTime() + gapMs : null
+    const onRotate = (): void => {
+      const actions = opts.getActions()
+      const advance = actions?.rotateNow
+      if (advance === undefined || busy) return
+      setBusy(true)
+      // `void` + finally: a rejected advance (host gone, no source) must still
+      // drop the spinner, and nothing here can await the promise.
+      void advance.call(actions).finally(() => setBusy(false))
+    }
+    return createElement(RotateOrb, { t, dueAt, gapMs, busy, onRotate })
+  }
+
+  root.render(createElement(OrbRoot))
+  ctx.effect(() => () => {
+    root.unmount()
+    host.remove()
+  }, 'dsh-any-background: rotate orb')
 }

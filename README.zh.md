@@ -1,65 +1,61 @@
-# dsh-any-background
+# dsh-any-background-plus
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm 版本" src="https://img.shields.io/npm/v/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://www.npmjs.com/package/dsh-any-background"><img alt="npm 月下载量" src="https://img.shields.io/npm/dm/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/npm/l/dsh-any-background?color=4d6bfe"></a>
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.2 ~ 0.1.7-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.1.7--rc.1-4d6bfe" /></a>
-  <a href="https://github.com/topics/dsh-better-sidebar"><img alt="插件生态：GitHub topic dsh-better-sidebar" src="https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E7%94%9F%E6%80%81-topic%20dsh--better--sidebar-4d6bfe" /></a><br /><br />
-  <a href="https://github.com/lilcandi/dsh-any-background-plus"><img src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social" alt="GitHub stars"></a>
-  <a href="https://dsh.directory/plugins/tkingxiao/dsh-any-background"><img src="https://dsh.directory/badges/listed.svg" alt="dsh.directory listed"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus"><img alt="GitHub stars" src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social"></a>
+  <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-4d6bfe"></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.2 ~ 0.2.0-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.2.0--rc.1-4d6bfe" /></a>
+  <a href="https://github.com/topics/dsh-plugin"><img alt="插件生态：GitHub topic dsh-plugin" src="https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E7%94%9F%E6%80%81-topic%20dsh--plugin-4d6bfe" /></a>
 </p>
 
 [English](README.md) | 中文
 
-> **这是一个 fork。** 修改自 [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)（MIT）。原项目是上游作者的原创作品；**从 v0.4.0 起的全部改动**——后来被删除的视频轮播、v0.4.2 的左右双图轮播、以及双文件夹轮播来源——均为本 fork 自己的实现。上游仓库：[github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)。
+> **这是一个 fork，而其中这一半是我做的。** 修改自 [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)（MIT）——色轮、逐表面透明度/模糊、动态生成背景与轮播引擎由上游作者原创。**从 v0.4.0 起的全部改动均为本 fork 自作**，详见下方[本 fork 做了什么](#本-fork-做了什么)。上游仓库：[github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)。
 
-一个 **DeepSeek Harness** 外观插件：自定义主题色、背景壁纸（图片 / 算法动态生成），以及逐表面的透明度与模糊度控制。兼容 **DSH 0.1.5-rc.2 ~ 0.1.7-rc.1**（官方右侧栏「主题」卡片等界面按宿主是否提供右侧栏注册表扩展点自动启用，缺失时静默跳过）。
+一个 **DeepSeek Harness** 外观插件：自定义主题色、背景壁纸（图片 / 算法动态生成）、逐表面的透明度与模糊度控制——外加本 fork 的**左右双图轮播**、**双文件夹轮播来源**和**右下角倒计时切换按钮**。兼容 **DSH 0.1.5-rc.2 ~ 0.2.0-rc.1**。
+
+---
+
+## 本 fork 做了什么
+
+以下是我在上游基础上自己实现的功能，也是这个 fork 存在的理由。
+
+- **左右双图轮播——两张图，一左一右。** 一个 `dual` 开关即可让**同一轮播的两张不同图片同时铺满窗口两侧**，避开中间的会话栏。动机是几何上的而非装饰性的：壁纸画在整个应用**后面**，而宿主的会话栏压在正中央，所以一张主体居中的图，它的主体恰好落在看不见的位置。两条车道改为贴着左右边缘，原本被遮掉一半的那张图，反而成了你真正在看的那张。默认关闭。
+- **一次轮播推两步，而不是开第二个轮播。** 两条车道来自**同一个轮播的同一次推进**：左侧下标由既有的 `pickRotationIndex()` 抽取（沿用相同的乱序/顺序语义，以及“不与当前图重复”规则），右侧下标则由 `nextLaneIndex()` 得出——它从左图**向前迈一步**。之所以是“迈一步”而不是“再抽一次”是刻意的：乱序随机数没有种子，两次独立抽取偶尔会撞成同一张图，而那恰恰是双图模式要避免的。在 `order` 模式下，这对图就是相邻的两张。选中的一对以 `laneItems` 持久化，所以它既能扛过刷新，也不会左右错位。
+- **第三种轮播来源：左右各一个文件夹。** 轮播可以为**每条车道读取不同的目录**，各自就地列举、就地推进。频率与模式仍然**共用**——重点是两个来源，而不是两个轮播——所以左右游标是分开保存的：左侧游标就是存下来的 `current`，右侧游标则通过“右车道当前显示的这张图在它自己的列表里是哪一项”反查得到。这一点在两个目录长度不同时立刻变得关键，因为单一共享下标会把较短的那个列表走越界。只有**两个目录都就绪**时墙面才会变化；只选了一个时只保存、不预览，这样墙面永远不会停在“半边是旧图”的尴尬状态。单文件夹模式仍然保留——这个“一对”是第三种来源，而不是替代品。
+- **分界线是窗口的绝对中心，且两条车道在构造上等宽。** `wpLeftEl` 与 `wpRightEl` 是**对等**的 `position:fixed; width:50%; z-index:-1` 元素，各自钉在一边，并被赋以**完全相同的像素宽度**——`Math.floor(innerWidth * 0.5)`——因此奇数宽度的视口也不可能让某一条车道多出一个像素。让图片够到接缝的那点外扩**只在 `center` 模式下**施加：在 `fit` 模式下图片在构造上就被限制在自己的车道内，此时再外扩会让两条车道在接缝处重叠，后画的那条赢走那条窄带——一张图肉眼可见地侵入了另一张，而这正是本模式要消除的不对称。
+- **两张图的实际尺寸是分别测量的。** 车道几何需要两张图的真实尺寸才能排版，而单槽位的测量缓存供不了这个——后跑的那条车道会占据缓存，把先跑的那条挤进按比例的兜底路径，结果就是一张按自己的框画、另一张按自己的比例画。那恰恰是双图模式要避免的“一张大一张小”，所以尺寸放在一张按 URL 索引的小映射表里同步查。
+- **边缘淡化对两条车道一视同仁。** 滑块按每张图自身的比例读数，渐变用同一套像素级配方针对同一个框计算，并且无条件施加——绝不会因为某条车道比它的框更宽就跳过它。因此两条车道对称淡化，不可能出现一条淡、另一条还是硬边的情况。
+- **设置页预览也照搬这个左右分屏。** 主题面板上的主图按同样的 50/50 网格绘制，右侧车道的图就摆在左边那张旁边，所以预览展示的是墙面真实的样子，而不是一张居中的图。右侧 URL 走主题 store 传递，而不是去读模块级的图片状态——因为 React 表面直接读那个状态会错过轮播更新。
+- **右下角倒计时切换按钮。** 一个圆形按钮钉在**视口右下角**，不必打开任何面板就能触达，周围画一圈实时进度环，显示距离下次换图还有多久。圆环**只在 `minutes` 定时模式下出现**——那是浏览器唯一能自己算出剩余时间的间隔（`reload` 每次读取都算到期，`daily`/`weekly` 由 Node 半部在页面加载时定夺，而关闭的轮播根本不会到期），所以这些情况下只画按钮，而不是画一个永远显示“满”的、等于撒谎的环。点击即刻换图，而因为推进本身会写入 `lastRotate`，环会自行从满重新开始。它作为独立的 React 根挂载并 portal 到 `<html>`，所以设置对话框的滚动容器或宿主的 transform 都裁不掉它。
+- **视频功能是按代码删除的。** 每一个视频端点、路由、上传处理器、mime 表、文件名白名单、文件夹扫描器、逐元素播放层及其设置，都是**删除而非隐藏**——`BackgroundType` 不再包含 `'video'`，轮播不再包含 `media` / `videoFolder` / `videoName` / `videoVolume` / `videoAlign` / `ended`，整个 `src/client/utils/video.ts` 模块已移除。仍在配置里写着视频轮播的旧存档，会在规范化时回退到图片。
+- **适配 DSH 0.2.0-rc.1。** 宿主现在会在导入任何模块**之前**按 `peerDependencies` 拦截插件，所以七个 `@deepseek-ai/dsh-*` peer、`engines.dsh` 与 `dsh.compatibility.dshReleases` 都列名了直到 `0.2.0-rc.1` 的**九个版本**，发布表也加了对应的一行。对比 0.2.0-rc.1 的包后确认 `ThemeRuntime` 与 `SidebarRightTabRegistry` 未变，因此本次构建**不需要新增适配器目录**——它并入事实依然成立的那个目录。
 
 ---
 
 ## 截图
 
 <p align="center">
-  <img src="example_img/image.png" alt="自定义主页" width="720">
+  <img src="example_img/shot-dual.png" alt="左右双图轮播：两张图一左一右" width="720">
   <br/>
-  <em>自定义主页 · 壁纸与主题色同时生效</em>
+  <em>左右双图轮播 · 同一轮播的两张不同图片，以窗口绝对中心为界，避开会话栏</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-2.png" alt="主题色选择器" width="720">
+  <img src="example_img/shot-panel.png" alt="主题设置面板" width="720">
   <br/>
-  <em>主题色选择器 · PS 风格色轮 + 精确 HSL/RGB 输入</em>
+  <em>主题设置面板 · 颜色、界面、字体、背景、配置档案集中在一处</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-3.png" alt="分部位透明度与模糊度" width="720">
+  <img src="example_img/shot-color.png" alt="主题色与逐表面透明度" width="720">
   <br/>
-  <em>分部位透明度与模糊度 · 主背景、侧边栏、卡片、设置面板</em>
+  <em>主题色与逐表面透明度 · PS 风格色轮、智能取色、逐表面滑块</em>
 </p>
 
 <p align="center">
-  <img src="example_img/image-4.png" alt="背景编辑器" width="720">
+  <img src="example_img/shot-orb.png" alt="右下角倒计时切换按钮" width="720">
   <br/>
-  <em>背景编辑器 · 图片壁纸支持拖动平移与滚轮缩放</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-6.png" alt="动态生成背景" width="720">
-  <br/>
-  <em>动态生成背景 · 网格渐变 / Shader / 几何图案预设</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-9.png" alt="几何背景 低多边形模式" width="720">
-  <br/>
-  <em>动态生成背景 · 几何 低多边形模式预览</em>
-</p>
-
-<p align="center">
-  <img src="example_img/image-10.png" alt="配置导出导入" width="720">
-  <br/>
-  <em>配置的导出和导入进行分享</em>
+  <em>右下角切换按钮 · 始终可触达，定时模式下围绕一圈倒计时</em>
 </p>
 
 ## 功能特性

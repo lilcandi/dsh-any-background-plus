@@ -189,6 +189,29 @@ export const UI_CSS = `
 .dab-hero-veil .dab-btn{background:rgba(255,255,255,.94);color:#14161a;border-color:transparent;height:30px;font-size:12px}
 .dab-hero-veil .dab-btn-danger{color:#dc2626}
 
+/* ── floating "rotate now" orb ───────────────────────────────────────────── */
+/* Fixed to the bottom-right corner of the VIEWPORT, not of the panel: the
+ * settings dialog scrolls, and a rotate button that scrolls away with it is
+ * useless. It lives on <html> through a Portal for the same reason the toast
+ * and the colour picker do — the host dialog's content column is a scroll
+ * container, so a fixed child would still be clipped by it. */
+.dab-orb-btn{position:fixed;right:22px;bottom:22px;z-index:60;width:52px;height:52px;flex:none;padding:0;border:0;border-radius:50%;cursor:pointer;background:rgba(20,22,26,.62);color:#fff;display:grid;place-items:center;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 6px 22px -6px rgba(0,0,0,.5);transition:transform .24s cubic-bezier(.34,1.56,.64,1),background .24s ease;animation:dab-orb-btn-in .42s cubic-bezier(.22,1,.36,1) both}
+.dab-orb-btn:hover{background:rgba(20,22,26,.78);transform:scale(1.07)}
+.dab-orb-btn:active{transform:scale(.94)}
+.dab-orb-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}
+/* The dial is absolutely positioned so it can outgrow the circular button and
+ * sit as a ring AROUND it; both layers are pointer-transparent so the whole
+ * disc stays one hover target. */
+.dab-orb-dial{position:absolute;inset:-4px;pointer-events:none;overflow:visible}
+.dab-orb-btn svg.dab-orb-glyph{position:relative;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))}
+.dab-orb-track{stroke:rgba(255,255,255,.22)}
+.dab-orb-arc{stroke:#fff;transition:stroke-dashoffset .5s linear}
+/* Spinning only while a swap is actually in flight reads as "working", so a
+ * slow folder read on a 6000-picture directory does not look like a dead click. */
+.dab-orb-btn.is-busy svg.dab-orb-glyph{animation:dab-spin 1s linear infinite}
+.dab-orb-btn.is-busy{cursor:progress}
+@keyframes dab-orb-btn-in{from{opacity:0;transform:translateY(14px) scale(.86)}to{opacity:1;transform:none}}
+
 /* ── generated background type cards ─────────────────────────────────────── */
 .dab-types{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 .dab-type{position:relative;border:1.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:14px;padding:10px;cursor:pointer;text-align:left;font:inherit;transition:border-color .25s,transform .25s,box-shadow .25s;animation:dab-type-in .42s cubic-bezier(.22,1,.36,1) both;animation-delay:calc(var(--i,0) * 60ms)}
