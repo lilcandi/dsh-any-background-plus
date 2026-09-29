@@ -17,6 +17,7 @@ import { mountStaticStyles } from './host-compat/styles'
 import { genTokens, hslToHsv, hsvToHsl, extractWallpaperColor } from './utils/color'
 import { readImgAsync, makeThumb, blobToDataUrl } from './utils/image'
 import { ThemeSection } from './components/ThemeSection'
+import { ensureUiCss } from './components/ui.css'
 import { RotateOrb } from './components/RotateOrb'
 import { registerThemeSidebarTab } from './sidebar/tab'
 import { registerNativeSidebarTab } from './sidebar/native-tab'
@@ -1034,11 +1035,18 @@ export function apply(ctx: Ctx): void {
   // Mounted here rather than inside a host surface because it must outlive the
   // settings dialog: the point is to reach the button without opening anything.
   //
-  // It is driven by the same store the settings page reads, so it needs no new
-  // config field: the ring is a pure function of `rotation.lastRotate`, and
-  // clicking goes through the shared `rotateNow()` (which stamps `lastRotate`,
-  // so the ring refills by itself — see the note in RotateOrb).
-  mountRotateOrb(ctx, { store: storeInstance, getActions: () => bound })
+  // It is driven by the same store the settings page reads, so the ring needs no
+  // new config field: it is a pure function of `rotation.lastRotate`, which the
+  // advance stamps (so the ring refills by itself — see the note in RotateOrb).
+  //
+  // The click handler is wired to `rotateOnceNow` DIRECTLY, not through the
+  // bound store actions. `storeInstance.actions` only carries the three sync
+  // actions declared in the `defineStore` block above — `rotateNow` is not one
+  // of them (it is added by `buildFace` for the settings page), so reading it
+  // off `bound` yields undefined and the click dies silently. Passing the
+  // closure makes the signature non-optional and independent of injection
+  // order, so that failure mode cannot come back.
+  mountRotateOrb(ctx, { store: storeInstance, rotateNow: () => rotateOnceNow() })
 
   // 6.5. Settings-nav icon: the harness derives the nav glyph from the section
   // id (unknown ids fall back to the settings gear) with no plugin hook, so
@@ -1158,16 +1166,24 @@ export function apply(ctx: Ctx): void {
  * way to get a viewport-fixed control that neither the settings dialog's scroll
  * column nor a host transform can clip.
  *
- * `getActions` is read lazily on click instead of captured: the actions are only
- * bound once a surface has been injected (boot sets them too, but a host without
- * the store module leaves them null forever), and the click happens long after
- * this runs.
+ * `rotateNow` arrives as a closure over `rotateOnceNow`, NOT read off the store.
+ * `storeInstance.actions` carries only the three sync actions the `defineStore`
+ * block declares — `rotateNow` is added later by `buildFace` for the settings
+ * page — so looking it up there yields undefined even after a surface has been
+ * injected, and the read is indistinguishable from "the button is dead". Taking
+ * it as a required parameter makes that failure unrepresentable.
  */
 function mountRotateOrb(
   ctx: Ctx,
-  opts: { store: StoreInstance | null; getActions: () => BoundActions | null }
+  opts: { store: StoreInstance | null; rotateNow: () => Promise<boolean> }
 ): void {
   if (opts.store === null) return
+  // The orb's whole look — fixed positioning, the round button, the ring —
+  // lives in the design-system stylesheet, which is otherwise only injected
+  // when ThemeSection first renders. Without this call the orb exists in the
+  // DOM but renders as a bare browser-default <button> in the top-left corner,
+  // which is exactly what "no button in the corner" looks like. Idempotent.
+  ensureUiCss()
   const host = document.createElement('div')
   host.dataset.dshAnyOrbRoot = '1'
   document.documentElement.appendChild(host)
@@ -1185,13 +1201,15 @@ function mountRotateOrb(
     const gapMs = rotGapMs(rotation)
     const dueAt = counts ? new Date(rotation.lastRotate as string).getTime() + gapMs : null
     const onRotate = (): void => {
-      const actions = opts.getActions()
-      const advance = actions?.rotateNow
-      if (advance === undefined || busy) return
+      if (busy) return
       setBusy(true)
       // `void` + finally: a rejected advance (host gone, no source) must still
-      // drop the spinner, and nothing here can await the promise.
-      void advance.call(actions).finally(() => setBusy(false))
+      // drop the spinner, and nothing here can await the promise. The catch is
+      // not decoration — this path failed silently once already, and a bare
+      // `finally` would have swallowed the reason all over again.
+      void opts.rotateNow()
+        .catch(err => console.error('dsh-any-background: rotate failed', err))
+        .finally(() => setBusy(false))
     }
     return createElement(RotateOrb, { t, dueAt, gapMs, busy, onRotate })
   }
