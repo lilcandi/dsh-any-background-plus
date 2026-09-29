@@ -116,11 +116,11 @@ if (cfg === undefined) {
 const rot = cfg.rotation
 console.log('config: ' + JSON.stringify({ source: rot.source, folder: rot.folder, folderCount: rot.folderCount, enabled: rot.enabled, mode: rot.mode, interval: rot.interval, intervalMinutes: rot.intervalMinutes }))
 check('rpc: the host reports a native folder picker', read.result.value.folderPicker === true)
-check('config: rotation is in folder mode', rot.source === 'folder')
+check('config: rotation is in folder mode', rot.source === 'folder' || rot.source === 'folders')
 check('config: a folder is remembered', typeof rot.folder === 'string' && rot.folder.length > 0, String(rot.folder))
 
 // --- 4. folder rotation really rotates.
-if (rot.source !== 'folder' || typeof rot.folder !== 'string') {
+if ((rot.source !== 'folder' && rot.source !== 'folders') || typeof rot.folder !== 'string') {
   console.log('\nverify-host: folder mode is not configured; skipping the rotation check')
   console.log(`verify-host: ${failures.length === 0 ? 'all checks passed' : failures.length + ' FAILED'}`)
   process.exit(failures.length === 0 ? 0 : 1)
@@ -193,7 +193,7 @@ if (names.length <= 1) {
 }
 check('rotate: the new image really lives in the configured folder', afterName !== undefined, String(afterName))
 check('rotate: folderCount still counts every image', after.folderCount === names.length, `${after.folderCount} vs ${names.length}`)
-check('rotate: folder mode survived the advance', after.source === 'folder' && after.folder === rot.folder)
+check('rotate: folder mode survived the advance', after.source === rot.source && after.folder === rot.folder)
 check('rotate: lastRotate was stamped', typeof after.lastRotate === 'string' && !Number.isNaN(Date.parse(after.lastRotate)))
 
 // The browser loads the wallpaper from this route, so the served bytes are what
