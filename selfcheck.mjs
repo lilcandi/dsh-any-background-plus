@@ -115,6 +115,79 @@ for (let i = 0; i < 50; i++) {
   check('pair: n=2 shuffle right is the current', p.right === 1, `right=${p.right}`)
 }
 
+// -- 2c. dual-lane re-apply must not self-trigger (stack-overflow regression) --
+// This reproduces a real crash: `applyDualLane` used to re-run `applyDualWp` from
+// inside an `imageNatSize` callback whenever `imgNat` did not name that url.
+// `imageNatSize` answers SYNCHRONOUSLY from `natSizes`, so the re-apply measured
+// nothing, re-applied again, and the stack blew with `RangeError: Maximum call
+// stack size exceeded` (wallpaper.ts:2406) on every rotation. The fix gates the
+// request on the cache, so the callback fires once per url, from the decode.
+//
+// The stub below mirrors the two contracts that make this decidable without a
+// browser: a `natSizes` hit replies synchronously, a miss replies from a queue.
+{
+  const natSizes = new Map()
+  const pending = []
+  const measure = (url, cb) => {
+    const cached = natSizes.get(url)
+    if (cached !== undefined) { cb(cached.w, cached.h); return }
+    pending.push(() => {
+      natSizes.set(url, { w: 4000, h: 3000 })
+      cb(4000, 3000)
+    })
+  }
+  // A re-application counter stands in for the real node mutations, so the test
+  // asserts on the recursion itself and not on any DOM detail.
+  const dualApply = (urls, req) => {
+    applyCount++
+    for (const url of urls) req(url, () => dualApply(urls, req))
+  }
+  let applyCount = 0
+  let caught = null
+
+  // The shipped gate: skip urls the cache already answers for.
+  const gated = (url, cb) => { if (natSizes.get(url) !== undefined) return; measure(url, cb) }
+  applyCount = 0
+  try { dualApply(['A', 'B'], gated) } catch (e) { caught = e }
+  eq('dual-recursion: the gated apply does not overflow', caught === null, true)
+  eq('dual-recursion: each uncached url requests one measurement', pending.length, 2)
+  eq('dual-recursion: the gated apply runs on the stack once', applyCount, 1)
+  // Interleave the decodes the way the browser does - one lands, its re-apply
+  // runs, and only then does the other land. Both orders must terminate; a
+  // queue drained in one batch would hide a re-apply that re-requests the url
+  // the other decode has not cached yet.
+  //
+  // Four applies, not two: the initial pass, one per decode. When A lands it
+  // re-applies, and that re-apply still sees B uncached, so B's decode is
+  // requested a second time (deduplication is the loader's job, not the gate's).
+  // When B lands the re-apply finds both cached and stops. The point is that the
+  // count is FINITE in the cache size and never a function of stack depth.
+  while (pending.length > 0) { const step = pending.shift(); try { step() } catch (e) { caught = e } }
+  eq('dual-recursion: the re-apply after each decode does not overflow', caught === null, true)
+  eq('dual-recursion: the re-applies stay bounded', applyCount, 4)
+  eq('dual-recursion: every url ends up measured', natSizes.size, 2)
+
+  // The defect, kept as the negative control: ungated, the second pass hits the
+  // synchronous cache hit and recurses until the stack dies. If this ever stops
+  // throwing, the gate is no longer load-bearing and the test above proves
+  // nothing.
+  natSizes.clear()
+  pending.length = 0
+  // Prime the cache first. The recursion is a SECOND-pass phenomenon: on an
+  // empty cache `measure` merely queues the decode and returns, so an ungated
+  // first pass is harmless and would prove nothing. The defect bites on the
+  // re-apply, which is the pass that meets the synchronous cache hit.
+  natSizes.set('A', { w: 4000, h: 3000 })
+  natSizes.set('B', { w: 4000, h: 3000 })
+  const ungated = (url, cb) => measure(url, cb)
+  applyCount = 0
+  let overflowed = false
+  try { dualApply(['A', 'B'], ungated) } catch (e) { overflowed = e instanceof RangeError }
+  eq('dual-recursion: the ungated re-apply still overflows (control)', overflowed, true)
+  check('dual-recursion: the control overflowed on the stack, not in a branch',
+    overflowed && applyCount > 100, `applyCount=${applyCount}`)
+}
+
 // -- 3. default config shape -------------------------------------------------
 const rot = DEFAULT_CONFIG.rotation
 eq('default: source', rot.source, 'pool')
@@ -271,7 +344,7 @@ const configPath = join(dataDir, 'theme-config.json')
 }
 
 // A real pick: the node half lists the directory and adopts it. With rotation on
-// and only ONE folder chosen it must NOT preview — half a pair reads as a bug,
+// and only ONE folder chosen it must NOT preview - half a pair reads as a bug,
 // and the operator is about to choose the other side. The wall is left exactly
 // as it was until both directories exist.
 {
@@ -417,7 +490,7 @@ const configPath = join(dataDir, 'theme-config.json')
   check('smoke: the pool names are distinct', new Set(poolNames).size === 3, poolNames.join(','))
 
   // Single lane first: the right slot must not be created by a plain rotation.
-  // The slot is removed rather than assumed absent — an earlier block picked a
+  // The slot is removed rather than assumed absent - an earlier block picked a
   // right directory, which really did write it, and this block's point is what
   // a PLAIN pool advance does, not what the file system happens to hold.
   const rightPath = join(process.env.DSH_HOME, '.dsh-any-background-data', 'wallpaper-right.jpg')

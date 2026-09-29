@@ -2520,15 +2520,22 @@ function applyDualWp(leftUrl: string | null, rightUrl: string | null): void {
   }
   // Both intrinsic sizes are needed for the `fit`/`center` boxes and their
   // masks, and a rotation swaps both URLs at once, so ask for whichever of the
-  // two is not the active one and re-run once it lands.
+  // two is not measured yet, and re-run once it lands.
+  //
+  // This re-run is only safe because of the cache gate below. `imageNatSize`
+  // invokes its callback SYNCHRONOUSLY when the size is already in `natSizes`,
+  // so an ungated `applyDualWp` here is a direct recursion: this call measures
+  // nothing, re-applies, measures nothing again — the stack overflows. The
+  // `!== undefined` test makes the callback fire exactly once per URL, on the
+  // decode that actually resolved it, and never on a re-apply. A `natSizes`
+  // hit is a no-op rather than a recursion.
   for (const url of [leftUrl, rightUrl]) {
-    if (imgNat === null || imgNat.url !== url) {
-      imageNatSize(url, () => {
-        if (el.isConnected && el.style.backgroundImage === `url("${leftUrl}")`) {
-          applyDualWp(rWpImage(), rWpImageRight())
-        }
-      })
-    }
+    if (natSizes.get(url) !== undefined) continue
+    imageNatSize(url, () => {
+      if (el.isConnected && el.style.backgroundImage === `url("${leftUrl}")`) {
+        applyDualWp(rWpImage(), rWpImageRight())
+      }
+    })
   }
 }
 
