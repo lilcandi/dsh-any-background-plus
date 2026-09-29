@@ -41,9 +41,9 @@ These are the features I built on top of upstream. They are the reason this fork
 </p>
 
 <p align="center">
-  <img src="example_img/shot-panel.png" alt="Theme settings panel" width="720">
+  <img src="example_img/shot-panel.png" alt="Theme settings: the background page" width="720">
   <br/>
-  <em>Theme settings panel · colour, interface, font, background and profiles in one place</em>
+  <em>The background page of the theme settings · source, folder picker, layout mode and wallpaper rotation</em>
 </p>
 
 <p align="center">
@@ -88,6 +88,12 @@ These are the features I built on top of upstream. They are the reason this fork
 - **Theme Watchdog** — Re-asserts the custom theme if the host resets it.
 
 ## Changelog (latest three releases)
+
+### v0.4.3 (Both defects from a real browser session, and both invisible to the build)
+
+- **The orb rendered as a bare button in the top-left corner**: its entire appearance — the round shape, the fixed bottom-right position, the countdown ring — lives in the design-system stylesheet, and `ensureUiCss()` was otherwise called from exactly one place: `ThemeSection`, which only mounts when the settings dialog opens. The orb mounts at plugin start, so the button was in the DOM with no `position:fixed` on it and fell back to browser-default styling inside the portal host. `mountRotateOrb` now calls `ensureUiCss()` itself before building the button; the call is idempotent, so opening the settings page afterwards costs one string comparison.
+- **Clicking the orb did nothing**: the click handler read `rotateNow` off `storeInstance.actions`, but that object carries only the three sync actions the `defineStore` block declares — `rotateNow` is added later by `buildFace` for the settings page, a different object entirely. The lookup returned `undefined` and the guard returned silently, so a missing function was indistinguishable from a dead button. The settings page's own 「立即切换」 button worked throughout, which is what proved the advance logic itself was sound and localised the fault to the floating button's action source. `rotateOnceNow` is now passed in as a **required** parameter, which makes that state unrepresentable rather than merely fixed, and a `.catch` reports any future rejection through `console.error` instead of swallowing it.
+- **The misleading optional member is gone**: `BoundActions.rotateNow?` was added while chasing the first theory (that the bound actions were stale) and was wrong — it invited exactly the silent lookup that caused the second defect. It is deleted, along with the comment that claimed the store and the settings slot hand out the same action object. They do not.
 
 ### v0.4.2 (Dual-lane wallpaper: two pictures, left and right)
 
