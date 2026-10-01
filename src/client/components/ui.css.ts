@@ -16,7 +16,7 @@ export const UI_CSS = `
 /* The section is rendered INLINE inside the host settings dialog's content
  * column: the host provides the modal chrome (backdrop, centering, closing).
  * These classes style only the embedded shell; transient fixed layers (toast,
- * color picker, background editor) escape through Portals on <html>. */
+ * color picker, background editor) escape through Portals on <body>. */
 .dab-root{position:relative;box-sizing:border-box;color:var(--dsw-alias-label-primary);animation:dab-fade-in .35s ease both;container-type:inline-size;display:flex;flex-direction:column;align-items:center;width:100%;min-width:0;--dab-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Courier New",monospace}
 /* The root needs its OWN border-box, not just the descendants' below: the
  * sidebar surface puts 12px of padding on it, and with the default content-box
@@ -192,25 +192,37 @@ export const UI_CSS = `
 /* ── floating "rotate now" orb ───────────────────────────────────────────── */
 /* Fixed to the bottom-right corner of the VIEWPORT, not of the panel: the
  * settings dialog scrolls, and a rotate button that scrolls away with it is
- * useless. It lives on <html> through a Portal for the same reason the toast
- * and the colour picker do — the host dialog's content column is a scroll
- * container, so a fixed child would still be clipped by it. */
-.dab-orb-btn{position:fixed;right:22px;bottom:22px;z-index:60;width:52px;height:52px;flex:none;padding:0;border:0;border-radius:50%;cursor:pointer;background:rgba(20,22,26,.62);color:#fff;display:grid;place-items:center;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 6px 22px -6px rgba(0,0,0,.5);transition:transform .24s cubic-bezier(.34,1.56,.64,1),background .24s ease;animation:dab-orb-btn-in .42s cubic-bezier(.22,1,.36,1) both}
-.dab-orb-btn:hover{background:rgba(20,22,26,.78);transform:scale(1.07)}
+ * useless. Dragging reassigns left/top from RotateOrb and overrides that
+ * corner; until then these two lines are the only source of truth for where it
+ * sits.
+ *
+ * Painted with the host's OWN floating-button recipe rather than a bespoke dark
+ * disc, so it reads as native chrome: the same fill/hover pair, the same
+ * elevation panel, the same label color and radius the host uses for its
+ * scroll-to-bottom button. --dsw-elevation-stroke-color is set locally because
+ * --dsw-elevation-panel builds its outer hairline from it. */
+.dab-orb-btn{position:fixed;right:22px;bottom:22px;z-index:60;width:34px;height:34px;padding:0;border:0;border-radius:100px;corner-shape:round;display:grid;place-items:center;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);--dsw-elevation-stroke-color:var(--dsw-alias-border-l3);box-shadow:var(--dsw-elevation-panel);transition:background .15s ease,transform .15s ease;animation:dab-orb-in .28s cubic-bezier(.22,1,.36,1) backwards}
+.dab-orb-btn:hover{background:var(--dsw-alias-button-floating-hover)}
 .dab-orb-btn:active{transform:scale(.94)}
-.dab-orb-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}
-/* The dial is absolutely positioned so it can outgrow the circular button and
- * sit as a ring AROUND it; both layers are pointer-transparent so the whole
- * disc stays one hover target. */
-.dab-orb-dial{position:absolute;inset:-4px;pointer-events:none;overflow:visible}
-.dab-orb-btn svg.dab-orb-glyph{position:relative;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))}
-.dab-orb-track{stroke:rgba(255,255,255,.22)}
-.dab-orb-arc{stroke:#fff;transition:stroke-dashoffset .5s linear}
+/* Held between press and release, so the pointer gets a "picked up" state that
+ * the fixed corner default cannot express. */
+.dab-orb-btn.is-dragging{cursor:grabbing;transform:scale(1.08)}
+/* The host's own focus ring, so keyboard focus here looks like every native
+ * control instead of a bespoke outline. */
+.dab-orb-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+/* The dial is a 60px square centred on the 34px disc so the ring orbits just
+ * OUTSIDE it: inset is (34 - 60) / 2. Both layers stay pointer-transparent so
+ * the whole disc remains one press target. */
+.dab-orb-dial{position:absolute;inset:-13px;pointer-events:none;overflow:visible}
+.dab-orb-btn svg.dab-orb-glyph{position:relative;pointer-events:none}
+/* Both strokes follow the button's own color instead of assuming a dark disc,
+ * so the ring stays legible on the floating fill in either color scheme. */
+.dab-orb-track{stroke:currentColor;stroke-opacity:.16}
+.dab-orb-arc{stroke:currentColor;transition:stroke-dashoffset .5s linear}
 /* Spinning only while a swap is actually in flight reads as "working", so a
  * slow folder read on a 6000-picture directory does not look like a dead click. */
 .dab-orb-btn.is-busy svg.dab-orb-glyph{animation:dab-spin 1s linear infinite}
 .dab-orb-btn.is-busy{cursor:progress}
-@keyframes dab-orb-btn-in{from{opacity:0;transform:translateY(14px) scale(.86)}to{opacity:1;transform:none}}
 
 /* ── generated background type cards ─────────────────────────────────────── */
 .dab-types{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -433,6 +445,7 @@ export const UI_CSS = `
 }
 @media (prefers-reduced-motion:reduce){
   .dab-root *,.dab-root *::before,.dab-root *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  .dab-orb-btn,.dab-orb-btn *,.dab-orb-btn *::before,.dab-orb-btn *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
 `
 

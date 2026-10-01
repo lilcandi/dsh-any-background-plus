@@ -1162,9 +1162,11 @@ export function apply(ctx: Ctx): void {
  * Mounts the floating rotate orb as its own React root (see RotateOrb).
  *
  * A separate root rather than a slot: the hook is `createRoot` on a detached
- * element that the orb's own `Portal` then hoists to `<html>`, which is the only
- * way to get a viewport-fixed control that neither the settings dialog's scroll
- * column nor a host transform can clip.
+ * element that the orb's own `Portal` then hoists to `<body>`, which is the only
+ * way to get a viewport-fixed control that the settings dialog's scroll column
+ * cannot clip. (This host root is attached to `<html>` and stays there: it is
+ * deliberately invisible — zero-size, no styles — and only exists to anchor the
+ * React root, so token inheritance does not matter for it.)
  *
  * `rotateNow` arrives as a closure over `rotateOnceNow`, NOT read off the store.
  * `storeInstance.actions` carries only the three sync actions the `defineStore`
