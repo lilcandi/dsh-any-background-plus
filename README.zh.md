@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/lilcandi/dsh-any-background-plus"><img alt="GitHub stars" src="https://img.shields.io/github/stars/lilcandi/dsh-any-background-plus?style=social"></a>
   <a href="https://github.com/lilcandi/dsh-any-background-plus/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-4d6bfe"></a>
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.2 ~ 0.2.0-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.2.0--rc.1-4d6bfe" /></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.2 ~ 0.2.1-alpha.2" src="https://img.shields.io/badge/DSH-0.1.5--rc.2%20~%200.2.1--alpha.2-4d6bfe" /></a>
   <a href="https://github.com/topics/dsh-plugin"><img alt="插件生态：GitHub topic dsh-plugin" src="https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E7%94%9F%E6%80%81-topic%20dsh--plugin-4d6bfe" /></a>
 </p>
 
@@ -11,7 +11,7 @@
 
 > **这是一个 fork，而其中这一半是我做的。** 修改自 [Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)（MIT）——色轮、逐表面透明度/模糊、动态生成背景与轮播引擎由上游作者原创。**从 v0.4.0 起的全部改动均为本 fork 自作**，详见下方[本 fork 做了什么](#本-fork-做了什么)。上游仓库：[github.com/Tkingxiao/dsh-any-background](https://github.com/Tkingxiao/dsh-any-background)。
 
-一个 **DeepSeek Harness** 外观插件：自定义主题色、背景壁纸（图片 / 算法动态生成）、逐表面的透明度与模糊度控制——外加本 fork 的**左右双图轮播**、**双文件夹轮播来源**和**右下角倒计时切换按钮**。兼容 **DSH 0.1.5-rc.2 ~ 0.2.0-rc.1**。
+一个 **DeepSeek Harness** 外观插件：自定义主题色、背景壁纸（图片 / 算法动态生成）、逐表面的透明度与模糊度控制——外加本 fork 的**左右双图轮播**、**双文件夹轮播来源**和**右下角倒计时切换按钮**。兼容 **DSH 0.1.5-rc.2 ~ 0.2.1-alpha.2**。
 
 ---
 
@@ -28,7 +28,7 @@
 - **设置页预览也照搬这个左右分屏。** 主题面板上的主图按同样的 50/50 网格绘制，右侧车道的图就摆在左边那张旁边，所以预览展示的是墙面真实的样子，而不是一张居中的图。右侧 URL 走主题 store 传递，而不是去读模块级的图片状态——因为 React 表面直接读那个状态会错过轮播更新。
 - **右下角倒计时切换按钮。** 一个圆形按钮钉在**视口右下角**，不必打开任何面板就能触达，周围画一圈实时进度环，显示距离下次换图还有多久。圆环**只在 `minutes` 定时模式下出现**——那是浏览器唯一能自己算出剩余时间的间隔（`reload` 每次读取都算到期，`daily`/`weekly` 由 Node 半部在页面加载时定夺，而关闭的轮播根本不会到期），所以这些情况下只画按钮，而不是画一个永远显示“满”的、等于撒谎的环。点击即刻换图，而因为推进本身会写入 `lastRotate`，环会自行从满重新开始。它作为独立的 React 根挂载并 portal 到 `<body>`，所以设置对话框的滚动容器或宿主的 transform 都裁不掉它。按住可以把它拖到任意位置（位置按窗口记住，每次改窗口大小都会重新夹回视口内），右键一下送回角落。它的外观直接取宿主**自己那个**浮动按钮的配方，而不是照着描一个——`--dsw-alias-button-floating-fill` / `-hover`、`--dsw-elevation-panel`、`--dsw-elevation-stroke-color: var(--dsw-alias-border-l3)` 与 `--dsw-alias-label-primary`，正是宿主「回到底部」控件解析到的那套令牌，所以它按构造就跟着主题色和明暗切换走。若改成挂到 `<html>`——它是 `<body>` 的兄弟节点，也就是落在所有设计令牌的另一侧——按钮会只剩一圈透明轮廓；这是量出来的，不是猜的。
 - **视频功能是按代码删除的。** 每一个视频端点、路由、上传处理器、mime 表、文件名白名单、文件夹扫描器、逐元素播放层及其设置，都是**删除而非隐藏**——`BackgroundType` 不再包含 `'video'`，轮播不再包含 `media` / `videoFolder` / `videoName` / `videoVolume` / `videoAlign` / `ended`，整个 `src/client/utils/video.ts` 模块已移除。仍在配置里写着视频轮播的旧存档，会在规范化时回退到图片。
-- **适配 DSH 0.2.0-rc.1。** 宿主现在会在导入任何模块**之前**按 `peerDependencies` 拦截插件，所以七个 `@deepseek-ai/dsh-*` peer、`engines.dsh` 与 `dsh.compatibility.dshReleases` 都列名了直到 `0.2.0-rc.1` 的**九个版本**，发布表也加了对应的一行。对比 0.2.0-rc.1 的包后确认 `ThemeRuntime` 与 `SidebarRightTabRegistry` 未变，因此本次构建**不需要新增适配器目录**——它并入事实依然成立的那个目录。
+- **能扛过宿主升级的兼容范围。** 宿主会在导入任何模块**之前**按 `peerDependencies` 拦截插件，所以一串写死的版本号等于一张硬性到期日：宿主发一个它没列名的新版本，插件在加载阶段就被拒，接着被下一次插件管理器写操作从 `dsh.profile.bundles` 里剔掉。现在这道闸是 semver 区间（`>=0.1.5-rc.2 <0.3.0-0`），而 `dsh.compatibility.dshReleases` 继续保留「真的核对过哪十个 release」的显式记录，直到 `0.2.1-alpha.2`。对比 `0.2.0-rc.1` 与 `0.2.1-alpha.2` 的包后确认 `ThemeRuntime` 与 `SidebarRightTabRegistry` 未变，因此本次构建**不需要新增适配器目录**——它并入事实依然成立的那个目录。
 
 ---
 
@@ -87,6 +87,14 @@
 - **主题守护** — 宿主重置主题后自动重新激活自定义主题。
 
 ## 更新日志（最新在前）
+
+### v0.4.5（兼容范围不再是一串手打的版本号）
+
+- **兼容范围现在真的是「范围」，而不是九个手打的版本字符串。** `engines.dsh`、七个受闸的 `@deepseek-ai/dsh-*` `peerDependencies` 与 `dsh.compatibility.dsh` 原本是 `0.1.5-rc.2 || 0.1.5-rc.3 || … || 0.2.0-rc.1` 这样的枚举——宿主每发布一个表外的新版本，都得先改它、重建、重新发一版，插件才能跑。现在统一为 `>=0.1.5-rc.2 <0.3.0-0`。上界是刻意留的：`<0.3.0-0` 放行全部 `0.2.x` 预发布版——`-0` 后缀的作用就是让预发布边界变为包含，于是 `0.3.0-alpha.1` 被挡在外面、`0.2.1-alpha.9` 不会——同时仍然止步于 `0.3.0`，那一版预期宿主形状会再变一次。
+- **为什么这是真故障、不是清理工作**：在 DSH `0.2.1-alpha.2` 上，那份枚举覆盖不到正在运行的 release，于是 `evaluatePluginCompatibility` 返回 issue、`loadProfileDirectory` 把它扔进 `skippedBundles`——**静默地，不打印、也不动 manifest**。之后某次插件管理器的写操作触发 `reconcileProfilePlugins`，它的保留规则是「依赖只有仍被判定为 bundle 才留」，于是 `dsh-any-background` 被整个从 `dsh.profile.bundles` 里剔除。用户看到的现象就是插件干脆不在了。放宽范围解决的是前半段；后半段是宿主侧行为，插件影响不了，所以 profile manifest 里那一条也得补回去。
+- **`dsh.compatibility.dshReleases` 保留显式列表，并新增 `0.2.1-alpha.2`。** 那张表是「哪些版本真的核对过」的人读记录，所以它继续是枚举——写成一个范围就等于宣称覆盖了一堆没人验过的东西。semver 范围是机器闸；这张表是关于「看过哪些」的声明。
+- **用宿主自带的 semver 验过，不是凭直觉**：拿宿主打包的 `semver@7.8.5` 加 `{includePrerelease: true}` 对这条范围跑 `semver.satisfies`——`0.1.5-rc.2` 到 `0.2.1-alpha.2` 全部满足，`0.3.0-alpha.1` 与 `1.0.0` 不满足。
+- **`SUPPORTED_RELEASES` 新增 `0.2.1-alpha.2` 一行**，于是适配器注册表对正在运行的宿主报告 `exact`，不再夹到 `nearest` 并在每次启动时打一行夹取警告。这一行并入 `0.1.7-alpha` 目录，因为 `0.2.1-alpha.2` 的包里 `ThemeRuntime` 与 `SidebarRightTabRegistry` 仍是那个目录记录的形状——是**新增一行，不是新增一个适配器目录**。这是**适配器**表，不是加载闸：`classifyRelease` 对不认识的版本返回 `match: 'nearest'`，那只是一行日志，从不构成拒绝。
 
 ### v0.4.4（按钮能拖了，而且按钮就是宿主自己那个按钮）
 
@@ -196,7 +204,7 @@ pnpm dsh web
 
 ## 兼容性
 
-- **[`dsh web`](https://github.com/deepseek-ai/deepseek-harness) 0.1.5-rc.2 ~ 0.2.0-rc.1** — 兼容范围覆盖全部九个已发布版本（`0.1.6-alpha.2` 与 `0.1.7-alpha.1`、`0.1.7-alpha.2` 已实测验证，`0.1.7-rc.1` 与 `0.2.0-rc.1` 以与前一版逐包比对核对）；`engines.dsh`、`@deepseek-ai/dsh-*` 的 `peerDependencies` 与 `dsh.compatibility.dshReleases` 都逐一列出——从 `0.1.7-rc.1` 起宿主自己就会按 peer 列表拒绝加载，列不列决定插件能不能跑，不是写给人看的说明。宿主版本在运行时由 Node 半侧解析，依赖特定宿主版本渠道的功能（右侧栏面板模糊、官方侧栏「主题」卡片）只在对应宿主结构存在时启用，其余功能在整个范围内表现一致。
+- **[`dsh web`](https://github.com/deepseek-ai/deepseek-harness) 0.1.5-rc.2 ~ 0.2.1-alpha.2** — 闸门是 `engines.dsh`、七个受闸的 `@deepseek-ai/dsh-*` `peerDependencies` 与 `dsh.compatibility.dsh` 里那条 semver 范围（`>=0.1.5-rc.2 <0.3.0-0`）；从 `0.1.7-rc.1` 起宿主自己就会按 peer 列表拒绝加载，所以这些字段写了什么，就决定插件能不能跑，不是写给人看的说明。`dsh.compatibility.dshReleases` 继续保留「真的核对过哪些 release」的显式枚举——共十个，`0.1.5-rc.2` 到 `0.2.1-alpha.2`（`0.1.6-alpha.2` 与 `0.1.7-alpha.1`、`0.1.7-alpha.2` 已实测验证，`0.1.7-rc.1` 与 `0.2.0-rc.1` 以与前一版逐包比对核对）——因为在那里写范围就等于宣称覆盖了一堆没人验过的东西。宿主版本在运行时由 Node 半侧解析，依赖特定宿主版本渠道的功能（右侧栏面板模糊、官方侧栏「主题」卡片）只在对应宿主结构存在时启用，其余功能在整个范围内表现一致。
 - **版本适配隔离**：release 由 Node 半侧从进程自身那份 `@deepseek-ai/dsh/package.json` 读出（客户端上下文不暴露版本；`ctx.profileContext.installAnchor` 指不到时退回启动器的磁盘布局），经 `read` RPC 下发后只由前置适配层路由——`src/host-compat/` 负责探测与渠道归类，`src/client/host-compat/versions/` 下**每个版本一个目录**（`v0-1-5-rc-2-3` / `v0-1-6-alpha-1-2` / `v0-1-7-alpha-1-2-rc-1` / `unknown`），各自描述该版本的面板力学与头部槽位键。底码只向适配层提问（引导页表面归谁、模糊挂在哪一层），不比较版本字符串。同一补丁行内的其它构建（`0.1.6-alpha.4` 之于核对基准 `0.1.6-alpha.2`）用该行的档位；整条补丁行都不在已核对范围内才收边取最近的一档并写日志。只有解析不到 release 时归入 `unknown`，回退到按 DOM 形状探测（`:has()` 双臂）而不是猜一个版本；适配新宿主 = 新增一个版本目录并在注册表登记。
 - **[DSHA](https://github.com/DSH-APP/DSHA)** — DeepSeek Harness 安卓启动器（免 ROOT、免 Termux）。其包内 dsh 为 `0.1.5-rc.2`，落在兼容范围内；移动端界面由 `dsh-web-mobile` 提供。
 - **[deepseek-harness-desktop](https://github.com/anywhere-labs/deepseek-harness-desktop)** — 支持
